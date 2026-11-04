@@ -1,0 +1,12 @@
+# Minimal Supabase CLI config. Run `supabase init` / `supabase link --project-ref <ref>` if you need the full default file.
+project_id = "infinity-hearts"
+
+[auth]
+# This is a private app for two people. Accounts are provisioned by the owner, so public sign-ups stay OFF.
+enable_signup = false
+site_url = "https://YOUR-RENDER-URL.onrender.com"
+additional_redirect_urls = ["https://YOUR-RENDER-URL.onrender.com/", "http://localhost:5173/"]
+
+[functions.send-notifications]
+# The function authenticates itself: x-cron-secret for the scheduler, or a user JWT it verifies for { test: true }.
+verify_jwt = false

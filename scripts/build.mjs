@@ -1,0 +1,32 @@
+// Static build: copies the app to dist/, writes config.js from environment variables, stamps the service worker.
+// Usage: SUPABASE_URL=... SUPABASE_ANON_KEY=... VAPID_PUBLIC_KEY=... node scripts/build.mjs
+import { rmSync, mkdirSync, cpSync, writeFileSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ROOT, ROOT_FILES, DIRS, walk, shellFiles, configJs, injectSw, versionHash } from './lib.mjs';
+
+// Optional local .env (git-ignored) so `node scripts/build.mjs` works without exporting variables by hand.
+import { existsSync } from 'node:fs';
+const envFile = join(ROOT, '.env');
+if (existsSync(envFile)) {
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*([^#\s]*)/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+  }
+}
+
+const dist = join(ROOT, 'dist');
+rmSync(dist, { recursive: true, force: true });
+mkdirSync(dist, { recursive: true });
+for (const f of ROOT_FILES) cpSync(join(ROOT, f), join(dist, f));
+for (const d of DIRS) cpSync(join(ROOT, d), join(dist, d), { recursive: true });
+
+const cfg = configJs();
+writeFileSync(join(dist, 'config.js'), cfg);
+
+const files = [...ROOT_FILES.map((f) => join(ROOT, f)), ...DIRS.flatMap((d) => walk(join(ROOT, d)))];
+const version = versionHash(files, cfg);
+writeFileSync(join(dist, 'sw.js'), injectSw(readFileSync(join(ROOT, 'sw.js'), 'utf8'), version, shellFiles()));
+
+const configured = /SUPABASE_URL": "https?:/.test(cfg);
+console.log(`Built dist/ (version ${version}). Supabase configured: ${configured ? 'yes' : 'NO - the app will run in local mode'}.`);
+if (!/VAPID_PUBLIC_KEY": "\S/.test(cfg)) console.log('Note: VAPID_PUBLIC_KEY is empty, so push notifications are disabled.');
