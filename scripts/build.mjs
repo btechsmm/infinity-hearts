@@ -14,6 +14,21 @@ if (existsSync(envFile)) {
   }
 }
 
+// Fall back to values pasted into the root config.js (public values only).
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+  try {
+    const raw = readFileSync(join(ROOT, 'config.js'), 'utf8');
+    for (const k of ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'VAPID_PUBLIC_KEY']) {
+      const m = raw.match(new RegExp(k + "\\s*:\\s*'([^']+)'"));
+      if (m && !process.env[k]) process.env[k] = m[1];
+    }
+  } catch { /* no config.js */ }
+}
+if (process.env.RENDER && (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY)) {
+  console.error('\nBUILD STOPPED: SUPABASE_URL and SUPABASE_ANON_KEY are not set.\nIn Render: your service -> Environment -> add both, then Manual Deploy -> Clear build cache & deploy.\n');
+  process.exit(1);
+}
+
 const dist = join(ROOT, 'dist');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });

@@ -49,15 +49,19 @@ function loginForm() {
   const err = h('p', { class: 'err', role: 'alert' });
   const btn = h('button', { class: 'btn primary', type: 'submit', style: 'width:100%' }, 'Sign in');
   const msg = state.sessionExpired ? h('p', { class: 'banner warn' }, 'Your session has ended. Please sign in again.') : null;
-  return h('form', { class: 'stack', style: 'text-align:left', onsubmit: async (e) => {
-    e.preventDefault(); err.textContent = ''; setBusy(btn, true);
-    try { await api.signIn(email.value, pw.value); } catch (x) { err.textContent = /Invalid login/i.test(x.message) ? 'That email or password is not right.' : navigator.onLine ? x.message : 'You are offline. Connect to sign in.'; setBusy(btn, false, 'Sign in'); }
-  } },
+  return h('form', {
+    class: 'stack', style: 'text-align:left', onsubmit: async (e) => {
+      e.preventDefault(); err.textContent = ''; setBusy(btn, true);
+      try { await api.signIn(email.value, pw.value); } catch (x) { err.textContent = /Invalid login/i.test(x.message) ? 'That email or password is not right.' : navigator.onLine ? x.message : 'You are offline. Connect to sign in.'; setBusy(btn, false, 'Sign in'); }
+    }
+  },
     msg, field('Email', email), field('Password', pw), err, btn,
-    h('button', { type: 'button', class: 'btn ghost', style: 'width:100%', onclick: async () => {
-      if (!email.value) { err.textContent = 'Enter your email above first.'; return; }
-      try { await api.resetPassword(email.value); toast('If that email is registered, a reset link is on its way.', 'ok'); } catch (x) { err.textContent = x.message; }
-    } }, 'Forgot password'),
+    h('button', {
+      type: 'button', class: 'btn ghost', style: 'width:100%', onclick: async () => {
+        if (!email.value) { err.textContent = 'Enter your email above first.'; return; }
+        try { await api.resetPassword(email.value); toast('If that email is registered, a reset link is on its way.', 'ok'); } catch (x) { err.textContent = x.message; }
+      }
+    }, 'Forgot password'),
     h('p', { class: 'hint', style: 'text-align:center' }, 'This is a private space for two. Accounts are set up by the app owner.'));
 }
 function recoveryForm() {
@@ -160,9 +164,17 @@ const flushMilestone = () => { if (pendingMilestone && state.authed) { toast(`${
 on('milestone', (e) => { pendingMilestone = e.detail; if (welcomed) flushMilestone(); });
 
 // ------------------------------------------------------------------ boot
+const isDevHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+function setupMessage() {
+  app.replaceChildren(h('main', { class: 'auth' }, h('div', { class: 'panel stack', style: 'text-align:center' },
+    h('img', { class: 'mark', src: '/assets/logo-mark.svg', alt: '' }),
+    h('h1', { class: 'title' }, 'Infinity ', h('span', { class: 'heart' }, 'Hearts')),
+    h('p', { class: 'banner warn', style: 'text-align:left' }, 'This site is not connected to its database yet, so sign-in is switched off. The owner needs to set SUPABASE_URL and SUPABASE_ANON_KEY in the hosting settings and redeploy. Nothing private is shown here.'))));
+}
 (async function boot() {
   document.documentElement.dataset.text = localStorage.getItem('ih.text') || 'normal';
   document.documentElement.dataset.motion = localStorage.getItem('ih.motion') || 'on';
+  if (!CLOUD && !isDevHost) { setupMessage(); return; }
   registerSW();
   try {
     await api.init();
@@ -171,6 +183,6 @@ on('milestone', (e) => { pendingMilestone = e.detail; if (welcomed) flushMilesto
   await showApp();
   if (isNative()) scheduleNativeReminders().catch((e) => console.warn('native schedule', e));
   // Re-check milestones when the app returns to the foreground (e.g., after midnight)
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.authed) api.syncMilestones().catch(() => {}); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.authed) api.syncMilestones().catch(() => { }); });
   if (CLOUD && state.online) api.flushOutbox();
 })();

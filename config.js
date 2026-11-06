@@ -3,6 +3,6 @@
 window.IH_CONFIG = {
   SUPABASE_URL: 'https://utjjzdupdvhyukmsyfbb.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_cHGHZOcJUEX-HCDoSaMA1w_vNFS9Azs',
-  VAPID_PUBLIC_KEY: '',
+  VAPID_PUBLIC_KEY: 'M3AGHvaLlL3yxC1lQCnCZ3LLRGZBgJbKtejuk+je9jI=',
 };
 

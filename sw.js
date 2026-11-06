@@ -12,8 +12,7 @@ const TILES = 'ih-tiles-v1';
 const PRECACHE = __PRECACHE_LIST__;
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
-});
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
