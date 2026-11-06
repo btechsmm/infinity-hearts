@@ -42,6 +42,15 @@ const files = [...ROOT_FILES.map((f) => join(ROOT, f)), ...DIRS.flatMap((d) => w
 const version = versionHash(files, cfg);
 writeFileSync(join(dist, 'sw.js'), injectSw(readFileSync(join(ROOT, 'sw.js'), 'utf8'), version, shellFiles()));
 
+// Self-check: run the generated file exactly as a browser would and make sure the settings really arrive.
+import vm from 'node:vm';
+{
+  const sandbox = { window: {} };
+  try { vm.runInNewContext(readFileSync(join(dist, 'config.js'), 'utf8'), sandbox); } catch (e) { console.error('BUILD STOPPED: dist/config.js is not valid JavaScript: ' + e.message); process.exit(1); }
+  const got = sandbox.window.IH_CONFIG;
+  const want = JSON.parse(cfg.slice(cfg.indexOf('{'), cfg.lastIndexOf('}') + 1));
+  if (!got || got.SUPABASE_URL !== want.SUPABASE_URL || got.SUPABASE_ANON_KEY !== want.SUPABASE_ANON_KEY) { console.error('BUILD STOPPED: dist/config.js does not define the settings correctly.'); process.exit(1); }
+}
 const configured = /SUPABASE_URL": "https?:/.test(cfg);
 console.log(`Built dist/ (version ${version}). Supabase configured: ${configured ? 'yes' : 'NO - the app will run in local mode'}.`);
 if (!/VAPID_PUBLIC_KEY": "\S/.test(cfg)) console.log('Note: VAPID_PUBLIC_KEY is empty, so push notifications are disabled.');
