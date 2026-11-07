@@ -23,6 +23,7 @@ export const state = {
   quotes: [], favorites: new Set(), history: [],
   milestones: [], specialDates: [], photos: [],
   messages: [], outbox: [], prefs: null,
+  rt: { partnerOnline: false, partnerTyping: false, connected: false, error: '' },
   lastSync: null, sessionExpired: false,
 };
 
@@ -78,7 +79,7 @@ export async function client() {
 
 // ------------------------------------------------------------------ boot
 export async function init() {
-  window.addEventListener('online', () => { state.online = true; emit('net'); if (state.authed) { syncAll().catch(() => {}); } });
+  window.addEventListener('online', () => { state.online = true; emit('net'); if (state.authed) { syncAll().catch(() => { }); } });
   window.addEventListener('offline', () => { state.online = false; emit('net'); });
 
   if (state.mode === 'local') {
@@ -188,6 +189,7 @@ export async function loadCloud() {
   state.history = hist.data.map((x) => ({ ...x, id: x.id })); await idb.replaceAll('quote_history', state.history);
   state.lastSync = new Date().toISOString(); await kv.set('lastSync', state.lastSync);
   emit('data');
+  markDelivered();
   await flushOutbox();
   await syncMilestones();
 }
@@ -418,6 +420,7 @@ export function eligiblePhotos() { return state.photos.filter((p) => p.is_active
 // ------------------------------------------------------------------ messages (cloud only; queued offline)
 let channel = null;
 function subscribeRealtime() {
+  subscribePresence();
   if (channel || !state.coupleId || !state.online) return;
   client().then((c) => {
     channel = c.channel(`couple-${state.coupleId}`)
@@ -432,7 +435,87 @@ function subscribeRealtime() {
       .subscribe();
   });
 }
-function unsubscribeRealtime() { if (channel && sb) sb.removeChannel(channel); channel = null; }
+function unsubscribeRealtime() {
+  if (channel && sb) sb.removeChannel(channel); channel = null;
+  if (rtChannel && sb) sb.removeChannel(rtChannel); rtChannel = null;
+  clearInterval(seenTimer); clearTimeout(typingStopTimer); clearTimeout(partnerTypingTimer);
+  state.rt = { partnerOnline: false, partnerTyping: false, connected: false, error: '' };
+}
+
+// ------------------------------------------------------------------ presence, typing, last seen
+// Private realtime channel `couple:<id>` (authorised by RLS on realtime.messages, see migration 20261107000001).
+let rtRetry = 0, rtChannel = null, seenTimer = null, typingStopTimer = null, partnerTypingTimer = null, lastTypingSent = 0, typingNow = false;
+
+function setRt(patch) { Object.assign(state.rt, patch); emit('presence'); }
+function syncPartnerOnline() {
+  if (!rtChannel || !state.partner) return;
+  const st = rtChannel.presenceState();
+  const online = Object.keys(st).some((k) => k === state.partner.id && st[k]?.length);
+  setRt({ partnerOnline: online, ...(online ? {} : { partnerTyping: false }) });
+}
+export async function touchLastSeen() {
+  if (state.mode !== 'cloud' || !state.online || !state.authed || !state.user) return;
+  try {
+    const c = await client();
+    const at = new Date().toISOString();
+    const { error } = await c.from('profiles').update({ last_seen_at: at }).eq('id', state.user.id);
+    if (error) console.warn('last seen not saved (run update-chat-features.sql):', error.message);
+    else if (state.profile) state.profile.last_seen_at = at;
+  } catch { /* best effort */ }
+}
+function subscribePresence() {
+  if (rtChannel || !state.coupleId || !state.online || !state.user) return;
+  client().then((c) => {
+    if (rtChannel) return;
+    rtChannel = c.channel(`couple:${state.coupleId}`, { config: { private: true, presence: { key: state.user.id }, broadcast: { self: false } } })
+      .on('presence', { event: 'sync' }, syncPartnerOnline)
+      .on('presence', { event: 'join' }, syncPartnerOnline)
+      .on('presence', { event: 'leave' }, () => { syncPartnerOnline(); refreshPartnerSeen(); })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (!payload || payload.from !== state.partner?.id) return;
+        clearTimeout(partnerTypingTimer);
+        if (payload.typing) { setRt({ partnerTyping: true }); partnerTypingTimer = setTimeout(() => setRt({ partnerTyping: false }), 5000); }
+        else setRt({ partnerTyping: false });
+      })
+      .subscribe((status, err) => {
+        const ok = status === 'SUBSCRIBED';
+        setRt({ connected: ok, error: ok ? '' : (['CHANNEL_ERROR', 'TIMED_OUT'].includes(status) ? status : state.rt.error) });
+        if (ok) { rtRetry = 0; rtChannel.track({ at: Date.now(), visible: !document.hidden }); }
+        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          // Usually: the chat-features SQL has not been run (the private channel is refused), or the network dropped.
+          console.warn('Realtime presence channel failed:', status, err?.message || err || '');
+          const ch = rtChannel; rtChannel = null; if (ch && sb) sb.removeChannel(ch);
+          if (rtRetry < 3) setTimeout(subscribePresence, 4000 * ++rtRetry);
+        }
+      });
+    touchLastSeen();
+    clearInterval(seenTimer);
+    seenTimer = setInterval(() => { if (!document.hidden) touchLastSeen(); }, 45000);
+  });
+}
+async function refreshPartnerSeen() {
+  try {
+    const c = await client();
+    const { data } = await c.from('profiles').select('id,last_seen_at').eq('id', state.partner.id).maybeSingle();
+    if (data) { state.partner = { ...state.partner, last_seen_at: data.last_seen_at }; await kv.set('partner', state.partner); emit('presence'); }
+  } catch { /* ignore */ }
+}
+/** Called by the composer. Sends at most one "typing" ping per 2.5s and a "stopped" ping 3s after the last key. */
+export function notifyTyping(isTyping) {
+  if (!rtChannel || !state.rt.connected) return;
+  const send = (typing) => { typingNow = typing; rtChannel.send({ type: 'broadcast', event: 'typing', payload: { from: state.user.id, typing } }); };
+  clearTimeout(typingStopTimer);
+  if (!isTyping) { if (typingNow) send(false); return; }
+  const now = Date.now();
+  if (!typingNow || now - lastTypingSent > 2500) { lastTypingSent = now; send(true); }
+  typingStopTimer = setTimeout(() => { if (typingNow) send(false); }, 3000);
+}
+/** Re-announce presence/last seen when the app returns to the foreground. */
+export function presenceVisibility() {
+  if (!rtChannel) return;
+  rtChannel.track({ at: Date.now(), visible: !document.hidden });
+  if (!document.hidden) touchLastSeen();
+}
 
 async function mergeMessage(row, fromRealtime = false) {
   const i = state.messages.findIndex((m) => m.id === row.id || (m.client_id && m.client_id === row.client_id && m.sender_id === row.sender_id));
@@ -441,7 +524,22 @@ async function mergeMessage(row, fromRealtime = false) {
   await idb.put('messages', row);
   state.outbox = state.outbox.filter((o) => o.id !== row.client_id);
   await idb.del('outbox', row.client_id);
-  emit('messages', { incoming: fromRealtime && row.recipient_id === state.user?.id && i < 0 });
+  const incoming = fromRealtime && row.recipient_id === state.user?.id && i < 0;
+  emit('messages', { incoming });
+  if (incoming) markDelivered();
+}
+
+/** Tell the sender this device has the messages (grey double tick). Reading later upgrades it to blue. */
+export async function markDelivered() {
+  if (state.mode !== 'cloud' || !state.online || !state.user) return;
+  const pending = state.messages.filter((m) => m.recipient_id === state.user.id && !m.delivered_at);
+  if (!pending.length) return;
+  try {
+    const c = await client();
+    const now = new Date().toISOString();
+    const { error } = await c.from('messages').update({ delivered_at: now }).eq('recipient_id', state.user.id).is('delivered_at', null);
+    if (!error) { pending.forEach((m) => { m.delivered_at = now; }); await idb.putMany('messages', pending); emit('messages'); }
+  } catch { /* retried on next open */ }
 }
 
 export function partnerId() { return state.partner?.id ?? null; }
@@ -489,7 +587,7 @@ export async function markThreadRead() {
   const c = await client();
   const now = new Date().toISOString();
   const { error } = await c.from('messages').update({ read_at: now }).eq('recipient_id', state.user.id).is('read_at', null);
-  if (!error) { unread.forEach((m) => { m.read_at = now; }); await idb.putMany('messages', unread); emit('messages'); }
+  if (!error) { unread.forEach((m) => { m.read_at = now; m.delivered_at = m.delivered_at || now; }); await idb.putMany('messages', unread); emit('messages'); }
 }
 export async function deleteMessage(id) {
   const c = await client();
@@ -510,6 +608,17 @@ export async function savePrefs(patch) {
     state.prefs = data; await kv.set('prefs', data);
   } else { state.prefs = next; await kv.set('prefs', next); }
   emit('data');
+}
+/** Set (or clear with '') the private nickname for the partner. Always kept on this device; synced to the account when the database has the column. */
+export async function setPartnerNickname(name) {
+  const v = String(name || '').trim().slice(0, 30);
+  try { v ? localStorage.setItem('ih.nick', v) : localStorage.removeItem('ih.nick'); } catch { /* ignore */ }
+  let synced = state.mode !== 'cloud';
+  if (state.mode === 'cloud' && state.online) {
+    try { await savePrefs({ partner_nickname: v || null }); synced = true; } catch (e) { console.warn('nickname not synced', e); }
+  }
+  emit('data');
+  return { synced };
 }
 export async function saveSubscription(sub) {
   if (state.mode !== 'cloud') return;

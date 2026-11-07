@@ -4,9 +4,17 @@ project_id = "infinity-hearts"
 [auth]
 # This is a private app for two people. Accounts are provisioned by the owner, so public sign-ups stay OFF.
 enable_signup = false
-site_url = "https://YOUR-RENDER-URL.onrender.com"
-additional_redirect_urls = ["https://YOUR-RENDER-URL.onrender.com/", "http://localhost:5173/"]
+site_url = "https://infinity-hearts.onrender.com"
+additional_redirect_urls = ["https://infinity-hearts.onrender.com/", "http://localhost:5173/"]
 
 [functions.send-notifications]
 # The function authenticates itself: x-cron-secret for the scheduler, or a user JWT it verifies for { test: true }.
+verify_jwt = false
+
+[functions.notify-message]
+# Authenticates itself with the x-cron-secret header sent by the database trigger.
+verify_jwt = false
+
+[functions.ack-delivery]
+# Called by the phone's service worker with no login; authenticated by a signed per-message token.
 verify_jwt = false

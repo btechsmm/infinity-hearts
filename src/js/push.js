@@ -28,11 +28,19 @@ export async function disablePush() {
   if (!pushSupported()) return;
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
-  if (sub) { await removeSubscription(sub.endpoint).catch(() => {}); await sub.unsubscribe(); }
+  if (sub) { await removeSubscription(sub.endpoint).catch(() => { }); await sub.unsubscribe(); }
 }
 
 export async function isSubscribed() {
   if (!pushSupported()) return false;
   const reg = await navigator.serviceWorker.getRegistration();
   return !!(await reg?.pushManager.getSubscription());
+}
+
+/** Remove the system notification for the chat once the person is looking at it. */
+export async function clearChatNotifications() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    (await reg?.getNotifications({ tag: 'ih-chat' }))?.forEach((n) => n.close());
+  } catch { /* not supported */ }
 }

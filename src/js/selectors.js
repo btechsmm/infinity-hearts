@@ -7,6 +7,10 @@ export const tz = () => state.cfg.homeTimezone;
 export const myRole = () => state.profile?.partner_role || 'becam';
 export const myName = () => state.profile?.display_name || (myRole() === 'faith' ? 'Faith' : 'Becam');
 export const partnerName = () => state.partner?.display_name || (myRole() === 'becam' ? 'Faith' : 'Becam');
+/** The name the chat shows for your partner: your private nickname for them, else their real name. */
+const NICK_KEY = 'ih.nick';
+export const localNick = () => { try { return localStorage.getItem(NICK_KEY) || ''; } catch { return ''; } };
+export const chatName = () => (state.prefs?.partner_nickname || localNick() || '').trim() || partnerName();
 /** Local time for the signed-in user is based on THEIR profile time zone. */
 export const myTz = () => state.profile?.timezone || (myRole() === 'faith' ? state.cfg.destinationTimezone : state.cfg.homeTimezone);
 

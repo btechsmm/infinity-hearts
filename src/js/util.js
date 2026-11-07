@@ -27,12 +27,12 @@ export function uuid() {
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
 }
 
-export function toast(msg, kind = 'info') {
+export function toast(msg, kind = 'info', { onClick } = {}) {
   const root = $('#toasts');
   if (!root) return;
-  const t = h('div', { class: `toast ${kind}`, role: 'status' }, msg);
+  const t = h(onClick ? 'button' : 'div', { class: `toast ${kind}`, role: 'status', type: onClick ? 'button' : null, onclick: onClick ? () => { t.remove(); onClick(); } : null }, msg);
   root.append(t);
-  setTimeout(() => t.remove(), kind === 'error' ? 6000 : 3200);
+  setTimeout(() => t.remove(), kind === 'error' ? 6000 : 3600);
 }
 
 export function fmtDate(iso, tz, opts = { day: 'numeric', month: 'long', year: 'numeric' }) {

@@ -1,4 +1,5 @@
 import { h, $ } from './util.js';
+import { pushBack, releaseBack } from './back.js';
 
 /** Bottom-sheet modal. Pushes a history entry so the Android back button closes it instead of leaving the app. */
 export function openModal(build, { title = '' } = {}) {
@@ -6,17 +7,11 @@ export function openModal(build, { title = '' } = {}) {
   const sheet = h('div', { class: 'sheet' });
   root.append(sheet);
   let closed = false;
-  const close = (fromPop = false) => {
-    if (closed) return; closed = true;
-    window.removeEventListener('popstate', onPop);
-    root.remove();
-    if (!fromPop && history.state?.ihModal) history.back();
-    prev?.focus?.();
-  };
-  const onPop = () => close(true);
   const prev = document.activeElement;
-  history.pushState({ ihModal: true }, '');
-  window.addEventListener('popstate', onPop);
+  const finish = () => { closed = true; root.remove(); prev?.focus?.(); };
+  const fromBack = () => { if (!closed) finish(); };               // Back button already removed the history entry
+  const close = () => { if (closed) return; finish(); releaseBack(fromBack); };
+  pushBack(fromBack);
   root.addEventListener('click', (e) => { if (e.target === root) close(); });
   root.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   sheet.append(build(close));

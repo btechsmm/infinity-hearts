@@ -21,6 +21,11 @@ const P = {
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
   bell: '<path d="M6 17V11a6 6 0 0 1 12 0v6l1.5 2h-15L6 17Z"/><path d="M10 21h4"/>',
   back: '<path d="M15 5 8 12l7 7"/>',
+  tick1: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  tick2: '<path d="M2 12.5l4.5 4.5L15 8"/><path d="M9.5 15.5l1.5 1.5L21 7.5"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  arrowup: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1-.9-1.4-.9-2.4 0-.9.7-1.6 1.7-1.6H17a3.5 3.5 0 0 0 3.5-3.5C20.5 6.7 16.8 3.5 12 3.5Z"/><circle cx="7.8" cy="11" r="1"/><circle cx="10.5" cy="7.3" r="1"/><circle cx="15" cy="7.8" r="1"/>',
   cloudoff: '<path d="M4 4l16 16"/><path d="M8 8.2A5 5 0 0 0 6.5 18H17a3.5 3.5 0 0 0 1.2-.2M18.5 12.6A4.5 4.5 0 0 0 12.4 7"/>',
 };
 export function icon(name) {

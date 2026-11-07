@@ -1,73 +1,177 @@
-import { h, toast, fmtTime, fmtDate } from '../util.js';
+// iMessage-style private chat: full-screen, keyboard-aware, with typing, online / last seen and colour themes.
+import { h, toast, fmtTime } from '../util.js';
 import { icon } from '../icons.js';
-import { state, on, sendMessage, flushOutbox, markThreadRead, deleteMessage, discardOutbox } from '../api.js';
-import { partnerName, dailyQuote, quoteAuthor, tz } from '../selectors.js';
+import { state, on, sendMessage, flushOutbox, markThreadRead, deleteMessage, discardOutbox, notifyTyping, setPartnerNickname } from '../api.js';
+import { chatName, partnerName, dailyQuote, quoteAuthor, tz } from '../selectors.js';
 import { milestoneForDay } from '../core/milestones.js';
+import { statusLine, formatStamp, needsStamp } from '../core/presence.js';
 import { openModal, confirmDialog, emptyState } from '../ui.js';
+import { CHAT_THEMES, chatTheme, setChatTheme } from '../chatTheme.js';
+import { haptic } from '../haptics.js';
+import { clearChatNotifications } from '../push.js';
 
 export function mount(root) {
   if (state.mode !== 'cloud') {
     root.append(emptyState(icon('messages'), 'Private messages need an account', 'Messaging is optional. Sign in with your Infinity Hearts account to use it. Everything else works without it.'));
-    return () => {};
+    return () => { };
   }
-  const thread = h('div', { class: 'thread', role: 'log', 'aria-live': 'polite', 'aria-label': 'Conversation' });
-  const input = h('textarea', { rows: '1', maxlength: '2000', placeholder: `Write to ${partnerName()}…`, 'aria-label': 'Message' });
-  const status = h('p', { class: 'hint', style: 'text-align:center' });
+  document.body.classList.add('chat-mode');
+  const zone = () => state.profile?.timezone || tz();
+  let name = chatName();
+
+  // ---------- header
+  const dot = h('span', { class: 'presence-dot', 'aria-hidden': 'true' });
+  const statusEl = h('p', { class: 'chat-status', 'aria-live': 'polite' });
+  const avatar = h('div', { class: 'chat-avatar', 'aria-hidden': 'true' }, dot);
+  const nameBtn = h('button', { class: 'name-btn', type: 'button', onclick: renamePicker });
+  const paintName = () => {
+    name = chatName();
+    nameBtn.textContent = name; nameBtn.setAttribute('aria-label', `${name}. Change the name shown for ${partnerName()}`);
+    avatar.firstChild?.nodeType === 3 ? (avatar.firstChild.nodeValue = name.slice(0, 1).toUpperCase()) : avatar.prepend(name.slice(0, 1).toUpperCase());
+    input.placeholder = 'Message'; input.setAttribute('aria-label', `Message to ${name}`);
+    chat.setAttribute('aria-label', `Chat with ${name}`);
+  };
+  const back = h('button', { class: 'chat-icon', type: 'button', 'aria-label': 'Back', onclick: () => { if (history.length > 2) history.back(); else location.hash = '#/home'; } }, icon('back'));
+  const header = h('header', { class: 'chat-head' }, back,
+    avatar,
+    h('div', { class: 'chat-who' }, h('h1', {}, nameBtn), statusEl),
+    h('button', { class: 'chat-icon', type: 'button', 'aria-label': 'Chat colour', onclick: themePicker }, icon('palette')),
+    h('button', { class: 'chat-icon', type: 'button', 'aria-label': `Send a saved message to ${name}`, onclick: sendPicker }, icon('heart')));
+
+  // ---------- thread
+  const scroller = h('div', { class: 'chat-scroll', role: 'log', 'aria-live': 'polite', 'aria-label': 'Conversation' });
+  const typingRow = h('div', { class: 'bubble-row them typing-row', hidden: true, 'aria-label': `${name} is typing` }, h('div', { class: 'bubble typing', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')));
+  const offlineBar = h('p', { class: 'chat-offline', hidden: true });
+
+  // ---------- composer
+  const input = h('textarea', { rows: '1', maxlength: '2000', placeholder: 'Message', 'aria-label': `Message to ${name}`, enterkeyhint: 'send', autocapitalize: 'sentences' });
+  const sendBtn = h('button', { class: 'send-btn', type: 'button', 'aria-label': 'Send message', disabled: true, 'data-haptic': 'none', onpointerdown: (e) => e.preventDefault(), onclick: submit }, icon('arrowup'));
+  const composer = h('form', { class: 'chat-composer', onsubmit: (e) => { e.preventDefault(); submit(); } }, h('div', { class: 'pill' }, input, sendBtn));
+
+  const chat = h('section', { class: 'chat', dataset: { theme: chatTheme() }, 'aria-label': `Chat with ${name}` }, header, offlineBar, scroller, composer);
+  root.append(chat);
 
   async function send(content, type = 'text', quoteId = null) {
-    try { await sendMessage({ content, type, quoteId }); }
-    catch (e) { toast(e.message, 'error'); }
+    try { haptic('send'); await sendMessage({ content, type, quoteId }); } catch (e) { toast(e.message, 'error'); }
   }
-  const submit = () => { const v = input.value.trim(); if (!v) return; input.value = ''; input.style.height = ''; send(v); };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && matchMedia('(min-width: 860px)').matches) { e.preventDefault(); submit(); } });
-  input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; });
+  function submit() {
+    const v = input.value.trim(); if (!v) return;
+    input.value = ''; autosize(); notifyTyping(false); send(v);
+    input.focus();                                         // keeps the keyboard open between messages
+    stickBottom(true);
+  }
+  const wide = () => matchMedia('(min-width: 860px) and (pointer: fine)').matches;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && wide()) { e.preventDefault(); submit(); } });
+  function autosize() { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; sendBtn.disabled = !input.value.trim(); sendBtn.classList.toggle('on', !!input.value.trim()); }
+  input.addEventListener('input', () => { autosize(); notifyTyping(!!input.value.trim()); });
+  input.addEventListener('blur', () => notifyTyping(false));
 
-  function bubble(m, mine) {
+  // ---------- keyboard: the chat is sized to the *visual* viewport so the composer rides above the keyboard
+  const vv = window.visualViewport;
+  function fit() {
+    const hgt = vv ? vv.height : innerHeight, top = vv ? vv.offsetTop : 0;
+    chat.style.setProperty('--vvh', `${Math.round(hgt)}px`);
+    chat.style.setProperty('--vvt', `${Math.round(top)}px`);
+    chat.classList.toggle('kb', !!vv && innerHeight - vv.height > 120);
+    if (atBottom || input === document.activeElement) stickBottom(true);
+  }
+  let atBottom = true;
+  scroller.addEventListener('scroll', () => { atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80; }, { passive: true });
+  function stickBottom(force) { if (force || atBottom) requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; atBottom = true; }); }
+  vv?.addEventListener('resize', fit); vv?.addEventListener('scroll', fit); addEventListener('resize', fit);
+  const lockScroll = () => { if (document.activeElement === input) scrollTo(0, 0); };   // stop the page jumping under the keyboard
+  addEventListener('scroll', lockScroll, { passive: true });
+
+  // ---------- bubbles
+  function bubble(m, mine, tail) {
     const deleted = !!m.deleted_at;
-    const el = h('div', { class: `msg ${mine ? 'me' : 'them'}${m.message_type === 'quote' ? ' quote' : ''}${deleted ? ' deleted' : ''}` },
-      deleted ? 'Message deleted' : m.content,
-      h('div', { class: 'meta' }, fmtTime(m.sent_at, state.profile?.timezone || tz()), mine && !deleted ? (m.read_at ? 'Read' : 'Sent') : ''));
+    const tick = mine && !deleted ? (m.read_at ? ['read', 'tick2', 'Read'] : m.delivered_at ? ['delivered', 'tick2', 'Delivered'] : ['sent', 'tick1', 'Sent']) : null;
+    const el = h('div', { class: `bubble ${mine ? 'me' : 'them'}${tail ? ' tail' : ''}${m.message_type === 'quote' ? ' quote' : ''}${deleted ? ' deleted' : ''}`, dataset: { id: m.id } }, deleted ? 'Message deleted' : m.content,
+      deleted ? null : h('span', { class: 'meta' }, fmtTime(m.sent_at, zone()), tick ? h('span', { class: `ticks ${tick[0]}`, role: 'img', 'aria-label': tick[2], dataset: { state: tick[0] } }, icon(tick[1])) : null));
     if (mine && !deleted) {
-      el.tabIndex = 0;
-      el.setAttribute('aria-label', `${m.content}. Press to delete.`);
-      const del = async () => { if (await confirmDialog({ title: 'Delete this message?', body: `It will disappear for both of you. This cannot be undone.`, confirmLabel: 'Delete', danger: true })) { try { await deleteMessage(m.id); } catch (e) { toast(e.message, 'error'); } } };
+      el.tabIndex = 0; el.title = 'Press and hold to delete';
+      el.setAttribute('aria-label', `${m.content}. Press and hold, or press Delete, to delete.`);
+      const del = async () => { haptic('warn'); if (await confirmDialog({ title: 'Delete this message?', body: 'It will disappear for both of you. This cannot be undone.', confirmLabel: 'Delete', danger: true })) { try { await deleteMessage(m.id); } catch (e) { toast(e.message, 'error'); } } };
       el.addEventListener('contextmenu', (e) => { e.preventDefault(); del(); });
       let t; el.addEventListener('touchstart', () => { t = setTimeout(del, 650); }, { passive: true });
       ['touchend', 'touchmove', 'touchcancel'].forEach((ev) => el.addEventListener(ev, () => clearTimeout(t), { passive: true }));
       el.addEventListener('keydown', (e) => { if (e.key === 'Delete' || e.key === 'Backspace') del(); });
     }
-    return el;
+    return h('div', { class: `bubble-row ${mine ? 'me' : 'them'}` }, el);
   }
-  function queued(o) {
-    return h('div', { class: 'msg me queued' }, o.content,
-      h('div', { class: 'meta' }, o.status === 'failed' ? 'Not sent' : state.online ? 'Sending…' : 'Waiting for connection',
-        h('button', { class: 'btn small ghost', style: 'min-height:28px;padding:0 8px', 'aria-label': 'Discard unsent message', onclick: () => discardOutbox(o.id) }, 'Discard')));
-  }
+  const queued = (o) => h('div', { class: 'bubble-row me' }, h('div', { class: 'bubble me tail queued' }, o.content, h('span', { class: 'meta' }, h('span', { class: 'ticks pending', role: 'img', 'aria-label': 'Not sent yet' }, icon('clock')))),
+    h('div', { class: 'receipt' }, o.status === 'failed' ? 'Not delivered' : state.online ? 'Sending…' : 'Waiting for connection',
+      h('button', { class: 'receipt-btn', type: 'button', 'aria-label': 'Discard unsent message', onclick: () => discardOutbox(o.id) }, 'Discard')));
 
-  let lastCount = -1;
+  let lastCount = -1, lastId = null;
   function render() {
-    const stick = innerHeight + scrollY >= document.body.scrollHeight - 140;
-    const kids = []; let day = '';
-    for (const m of state.messages) {
-      const d = m.sent_at.slice(0, 10);
-      if (d !== day) { day = d; kids.push(h('div', { class: 'eyebrow', style: 'text-align:center;margin:8px 0' }, fmtDate(m.sent_at, state.profile?.timezone || tz(), { weekday: 'short', day: 'numeric', month: 'short' }))); }
-      kids.push(bubble(m, m.sender_id === state.user.id));
-    }
+    const kids = []; let prev = null;
+    const list = state.messages;
+    list.forEach((m, i) => {
+      if (needsStamp(prev?.sent_at, m.sent_at)) kids.push(h('div', { class: 'stamp' }, formatStamp(m.sent_at, new Date(), zone())));
+      const next = list[i + 1];
+      const tail = !next || next.sender_id !== m.sender_id || needsStamp(m.sent_at, next.sent_at);
+      kids.push(bubble(m, m.sender_id === state.user.id, tail));
+      prev = m;
+    });
     for (const o of state.outbox) kids.push(queued(o));
-    thread.replaceChildren(...(kids.length ? kids : [emptyState(icon('heart'), `Say hello to ${partnerName()}`, 'This is a private space for just the two of you.')]));
-    status.textContent = !state.online ? 'You are offline. Messages you write will be sent when you are back online.' : state.outbox.length ? 'Sending queued messages…' : '';
-    if (state.messages.length !== lastCount || state.outbox.length) { if (stick || lastCount < 0) setTimeout(() => scrollTo(0, document.body.scrollHeight), 30); }
-    lastCount = state.messages.length;
+    if (!kids.length) kids.push(emptyState(icon('heart'), `Say hello to ${name}`, 'This is a private space for just the two of you.'));
+    scroller.replaceChildren(...kids, typingRow);
+    offlineBar.hidden = state.online; offlineBar.textContent = state.online ? '' : 'You are offline. Messages you write are sent when you are back online.';
+    const newest = list[list.length - 1]?.id || null;
+    if (lastCount < 0) stickBottom(true); else if (list.length !== lastCount || newest !== lastId || state.outbox.length) stickBottom(false);
+    lastCount = list.length; lastId = newest;
     markThreadRead();
   }
 
+  function paintStatus() {
+    const s = statusLine({ online: state.rt.partnerOnline, typing: state.rt.partnerTyping, lastSeen: state.partner?.last_seen_at, now: new Date(), tz: zone(), offline: !state.online });
+    if (s.kind === 'none' && state.online && state.rt.error) { s.text = 'Status unavailable'; s.kind = 'none-err'; }
+    statusEl.textContent = s.text; statusEl.dataset.kind = s.kind; statusEl.hidden = s.kind === 'none';
+    statusEl.title = s.kind === 'none-err' ? 'Online status needs supabase/update-chat-features.sql to be run once in Supabase.' : '';
+    dot.hidden = s.kind !== 'online' && s.kind !== 'typing';
+    const showTyping = s.kind === 'typing';
+    if (typingRow.hidden === showTyping) { typingRow.hidden = !showTyping; if (showTyping) stickBottom(false); }
+  }
+
+  // ---------- pickers
+  function renamePicker() {
+    openModal((close) => {
+      const real = partnerName();
+      const inp = h('input', { type: 'text', maxlength: '30', value: chatName() === real ? '' : chatName(), placeholder: real, 'aria-label': `Name to show for ${real}`, autocapitalize: 'words', enterkeyhint: 'done' });
+      const save = async (v) => {
+        const { synced } = await setPartnerNickname(v); close();
+        toast(v ? `Chat will show “${v}”` : `Back to ${real}`, 'ok');
+        if (!synced) toast('Saved on this device only. Run the nickname SQL to keep it on all your devices.', 'info');
+      };
+      return h('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); save(inp.value); } },
+        h('h2', { class: 'title' }, 'Chat name'),
+        h('p', { class: 'sub' }, `Choose what you see for ${real} in this chat. Only you see it; ${real} is not told and their own screen does not change.`),
+        inp,
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'btn primary', type: 'submit' }, 'Save'),
+          h('button', { class: 'btn ghost', type: 'button', onclick: () => save('') }, `Use “${real}”`),
+          h('button', { class: 'btn ghost', type: 'button', onclick: () => close() }, 'Cancel')));
+    }, { title: 'Chat name' });
+  }
+  function themePicker() {
+    openModal((close) => h('div', { class: 'stack' }, h('h2', { class: 'title' }, 'Chat colour'),
+      h('p', { class: 'sub' }, 'Only changes how the chat looks on this device.'),
+      h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Chat colour' }, CHAT_THEMES.map((t) =>
+        h('button', {
+          class: 'swatch', type: 'button', role: 'radio', 'aria-checked': String(chatTheme() === t.id), 'aria-label': t.name, style: `--sw:${t.swatch}`,
+          onclick: (e) => { setChatTheme(t.id); haptic('select'); e.currentTarget.parentElement.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-checked', String(b === e.currentTarget))); }
+        },
+          h('span', { class: 'sw' }), h('span', {}, t.name)))),
+      h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Done')), { title: 'Chat colour' });
+  }
   function sendPicker() {
     openModal((close) => {
       const now = new Date();
       const q = dailyQuote(now); const ms = milestoneForDay(now, state.cfg, state.cfg.customRules);
       const favs = state.quotes.filter((x) => state.favorites.has(x.id)).slice(0, 12);
       const opt = (label, text, type, quoteId) => h('button', { class: 'btn', style: 'justify-content:flex-start;text-align:left;height:auto;padding:10px 14px;white-space:normal', onclick: () => { send(text, type, quoteId); close(); } }, h('span', {}, h('b', { style: 'display:block' }, label), h('span', { class: 'sub' }, text)));
-      return h('div', { class: 'stack' }, h('h2', { class: 'title' }, `Send to ${partnerName()}`),
+      return h('div', { class: 'stack' }, h('h2', { class: 'title' }, `Send to ${name}`),
         h('div', { class: 'stack' },
           ms ? opt('Today’s milestone', `${ms.title}. ${ms.message}`, 'milestone') : null,
           q ? opt('Today’s message', q.message, 'quote', q.id) : null,
@@ -79,10 +183,14 @@ export function mount(root) {
     }, { title: 'Send' });
   }
 
-  root.append(h('div', {}, h('header', { class: 'row between' }, h('div', {}, h('h1', { class: 'title' }, partnerName()), h('p', { class: 'sub' }, 'Private messages. Only the two of you can read them.')),
-    h('button', { class: 'btn small', onclick: sendPicker }, icon('heart'), 'Send…')), thread, status,
-    h('div', { class: 'composer' }, input, h('button', { class: 'btn primary', 'aria-label': 'Send message', onclick: submit }, icon('messages')))));
-  render();
-  const o1 = on('messages', render); const o2 = on('net', () => { render(); flushOutbox(); });
-  return () => { o1(); o2(); };
+  paintName(); render(); paintStatus(); fit(); autosize(); clearChatNotifications();
+  const off = [on('data', paintName), on('messages', render), on('presence', paintStatus), on('net', () => { render(); paintStatus(); flushOutbox(); })];
+  const tick = setInterval(paintStatus, 30000);             // keeps "last seen … " wording fresh
+  const onVis = () => { if (!document.hidden) { markThreadRead(); clearChatNotifications(); fit(); } };
+  document.addEventListener('visibilitychange', onVis);
+  return () => {
+    off.forEach((f) => f()); clearInterval(tick); document.removeEventListener('visibilitychange', onVis);
+    vv?.removeEventListener('resize', fit); vv?.removeEventListener('scroll', fit); removeEventListener('resize', fit); removeEventListener('scroll', lockScroll);
+    notifyTyping(false); document.body.classList.remove('chat-mode');
+  };
 }

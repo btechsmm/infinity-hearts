@@ -5,6 +5,11 @@ import * as api from './api.js';
 import { state, on } from './api.js';
 import { field, setBusy } from './ui.js';
 import { scheduleNativeReminders, isNative } from './native.js';
+import { chatName } from './selectors.js';
+import { storageDegraded } from './store.js';
+import { initBack } from './back.js';
+import { initSound, playSound } from './sound.js';
+import { initHaptics, haptic } from './haptics.js';
 
 const ROUTES = {
   home: () => import('./views/home.js'),
@@ -135,6 +140,7 @@ async function route() {
   if (!state.authed || !shell) return;
   const name = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'home';
   const key = ROUTES[name] ? name : 'home';
+  scrollMemo[curRoute] = scrollY; curRoute = key;
   cleanup?.(); cleanup = null;
   shell.tabs.querySelectorAll('.tab').forEach((a) => (a.dataset.route === key ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
   shell.main.replaceChildren();
@@ -143,14 +149,20 @@ async function route() {
     cleanup = mod.mount(shell.main) || null;
   } catch (e) {
     console.error(e);
-    shell.main.replaceChildren(h('p', { class: 'banner warn' }, navigator.onLine ? 'Something went wrong loading this page.' : 'This page has not been saved for offline use yet. Reconnect once to load it.'));
+    // The technical reason is shown in small print so a problem can be reported and fixed quickly.
+    const why = `${e?.name || 'Error'}: ${String(e?.message || e).slice(0, 160)}`;
+    shell.main.replaceChildren(h('div', { class: 'banner warn' }, navigator.onLine ? 'Something went wrong loading this page.' : 'This page has not been saved for offline use yet. Reconnect once to load it.', h('small', { style: 'display:block;margin-top:8px;opacity:.75;word-break:break-word' }, why)));
   }
-  scrollTo(0, 0);
+  scrollTo(0, scrollMemo[key] || 0);
 }
+const scrollMemo = {}; let curRoute = '';
 window.addEventListener('hashchange', route);
 
+let backReady = false, warnedStorage = false;
 async function showApp() {
+  if (!backReady) { backReady = true; initBack(() => toast('Press back again to exit')); }   // also after a fresh sign-in
   shell = buildShell();
+  if (storageDegraded() && !warnedStorage) { warnedStorage = true; toast('Your browser cannot save data on this device (storage is full or blocked). The app works, but offline copies are not kept.', 'error'); }
   app.replaceChildren(shell.root);
   if (!location.hash) history.replaceState(null, '', '#/home');
   await route();
@@ -161,7 +173,16 @@ on('auth', () => { if (!state.authed || state.recovery || state.notMember) authS
 // Milestone toasts wait until the welcome screen is gone so they never cover its button.
 let pendingMilestone = null;
 const flushMilestone = () => { if (pendingMilestone && state.authed) { toast(`${pendingMilestone.title}: ${pendingMilestone.message}`, 'ok'); } pendingMilestone = null; };
-on('milestone', (e) => { pendingMilestone = e.detail; if (welcomed) flushMilestone(); });
+// Sounds: Teams tone when a message lands while you are inside the chat, WhatsApp tone for everything else in the app.
+const inChat = () => (location.hash.replace(/^#\/?/, '').split('?')[0]) === 'messages';
+on('messages', (e) => {
+  if (!e.detail?.incoming || !state.authed) return;
+  if (inChat() && !document.hidden) { playSound('chat'); haptic('receive'); return; }
+  playSound('notify'); haptic('receive');
+  const last = state.messages[state.messages.length - 1];
+  if (!document.hidden) toast(`${chatName()}: ${last?.content?.slice(0, 80) || 'New message'}`, 'ok', { onClick: () => { location.hash = '#/messages'; } });
+});
+on('milestone', (e) => { playSound('notify'); pendingMilestone = e.detail; if (welcomed) flushMilestone(); });
 
 // ------------------------------------------------------------------ boot
 const isDevHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -175,7 +196,7 @@ function setupMessage() {
   document.documentElement.dataset.text = localStorage.getItem('ih.text') || 'normal';
   document.documentElement.dataset.motion = localStorage.getItem('ih.motion') || 'on';
   if (!CLOUD && !isDevHost) { setupMessage(); return; }
-  registerSW();
+  registerSW(); initSound(); initHaptics();
   try {
     await api.init();
   } catch (e) { console.error('init failed', e); }
@@ -183,6 +204,6 @@ function setupMessage() {
   await showApp();
   if (isNative()) scheduleNativeReminders().catch((e) => console.warn('native schedule', e));
   // Re-check milestones when the app returns to the foreground (e.g., after midnight)
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.authed) api.syncMilestones().catch(() => { }); });
+  document.addEventListener('visibilitychange', () => { api.presenceVisibility(); if (!document.hidden && state.authed) api.syncMilestones().catch(() => { }); });
   if (CLOUD && state.online) api.flushOutbox();
 })();
