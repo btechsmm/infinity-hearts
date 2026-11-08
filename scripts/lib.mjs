@@ -1,5 +1,5 @@
 import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative, sep, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -39,4 +39,27 @@ export function versionHash(files, extra = '') {
   const h = createHash('sha256').update(extra);
   for (const f of files) if (existsSync(f)) h.update(readFileSync(f));
   return h.digest('hex').slice(0, 12);
+}
+
+/** Every JS module the app needs at start-up (static imports from main.js) plus the screens, so the browser fetches them all in
+ *  parallel instead of discovering them one level at a time (a slow chain on phones). */
+export function modulePreloads() {
+  const seen = new Set(); const queue = ['/src/js/main.js'];
+  const viewDir = join(ROOT, 'src/js/views');
+  if (existsSync(viewDir)) for (const f of readdirSync(viewDir)) if (f.endsWith('.js')) queue.push('/src/js/views/' + f);
+  while (queue.length) {
+    const url = queue.shift(); if (seen.has(url)) continue; seen.add(url);
+    const file = join(ROOT, url); if (!existsSync(file)) continue;
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)\s[^'"\n]*?from\s*['"](\.[^'"]+)['"]|(?:^|\n)\s*import\s*['"](\.[^'"]+)['"]/g)) {
+      const rel = m[1] || m[2];
+      const next = '/' + relative(ROOT, join(dirname(file), rel)).split(sep).join('/');
+      if (!seen.has(next)) queue.push(next);
+    }
+  }
+  return [...seen].filter((u) => existsSync(join(ROOT, u)));
+}
+export function injectPreloads(html) {
+  const tags = modulePreloads().map((u) => `  <link rel="modulepreload" href="${u}">`).join('\n');
+  return html.replace('</head>', tags + '\n</head>');
 }

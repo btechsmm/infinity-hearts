@@ -2,7 +2,7 @@
 // Usage: SUPABASE_URL=... SUPABASE_ANON_KEY=... VAPID_PUBLIC_KEY=... node scripts/build.mjs
 import { rmSync, mkdirSync, cpSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROOT, ROOT_FILES, DIRS, walk, shellFiles, configJs, injectSw, versionHash } from './lib.mjs';
+import { ROOT, ROOT_FILES, DIRS, walk, shellFiles, configJs, injectSw, versionHash, injectPreloads } from './lib.mjs';
 
 // Optional local .env (git-ignored) so `node scripts/build.mjs` works without exporting variables by hand.
 import { existsSync } from 'node:fs';
@@ -35,6 +35,7 @@ mkdirSync(dist, { recursive: true });
 for (const f of ROOT_FILES) cpSync(join(ROOT, f), join(dist, f));
 for (const d of DIRS) cpSync(join(ROOT, d), join(dist, d), { recursive: true });
 
+writeFileSync(join(dist, 'index.html'), injectPreloads(readFileSync(join(ROOT, 'index.html'), 'utf8')));   // parallel module loading
 const cfg = configJs();
 writeFileSync(join(dist, 'config.js'), cfg);
 

@@ -2,7 +2,7 @@
 // Everything the UI shows is derived from `state`; views re-render on bus events.
 import { CONFIG, CLOUD } from './config.js';
 import { idb, kv, wipeAll } from './store.js';
-import { uuid, resizeImage } from './util.js';
+import { uuid, resizeImage, squareImage } from './util.js';
 import { DEFAULTS, localDateISO } from './core/time.js';
 import { missedMilestones } from './core/milestones.js';
 import { defaultSpecialDates } from './core/specialDates.js';
@@ -189,7 +189,7 @@ export async function loadCloud() {
   state.history = hist.data.map((x) => ({ ...x, id: x.id })); await idb.replaceAll('quote_history', state.history);
   state.lastSync = new Date().toISOString(); await kv.set('lastSync', state.lastSync);
   emit('data');
-  markDelivered();
+  markDelivered(); emit('avatars');
   await flushOutbox();
   await syncMilestones();
 }
@@ -442,6 +442,58 @@ function unsubscribeRealtime() {
   state.rt = { partnerOnline: false, partnerTyping: false, connected: false, error: '' };
 }
 
+// ------------------------------------------------------------------ profile pictures
+// Stored in the private couple-photos bucket under <couple_id>/avatars/, path kept in profiles.avatar_url. Only the two of you can read it.
+const avatarUrls = new Map();   // userId -> { path, url }
+const profileOf = (id) => (state.user && id === state.user.id ? state.profile : state.partner && state.partner.id === id ? state.partner : null);
+
+/** Object URL of a person's profile picture, or null (then the app shows their initial). Cached on the device for offline use. */
+export async function avatarUrlFor(userId) {
+  const path = profileOf(userId)?.avatar_url;
+  if (!path) return null;
+  const hit = avatarUrls.get(userId);
+  if (hit && hit.path === path) return hit.url;
+  let rec = await kv.get(`avatar:${userId}`);
+  if ((!rec || rec.path !== path) && state.mode === 'cloud' && state.online) {
+    try {
+      const c = await client();
+      const { data, error } = await c.storage.from('couple-photos').download(path);
+      if (error) throw error;
+      rec = { path, blob: data }; await kv.set(`avatar:${userId}`, rec);
+    } catch (e) { console.warn('avatar download failed', e); }
+  }
+  if (!rec?.blob) return null;
+  const url = URL.createObjectURL(rec.blob);
+  if (hit?.url) URL.revokeObjectURL(hit.url);
+  avatarUrls.set(userId, { path: rec.path, url });
+  return url;
+}
+
+export async function setAvatar(file) {
+  if (state.mode !== 'cloud') throw new Error('Sign in to set a profile picture.');
+  if (!state.online) throw new Error('Connect to the internet to change your picture.');
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) throw new Error('Please choose a JPEG, PNG or WebP photo.');
+  const blob = await squareImage(file);
+  const c = await client();
+  const path = `${state.coupleId}/avatars/${state.user.id}-${Date.now()}.jpg`;
+  const up = await c.storage.from('couple-photos').upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+  if (up.error) throw up.error;
+  const old = state.profile?.avatar_url;
+  try { await updateProfile({ avatar_url: path }); } catch (e) { await c.storage.from('couple-photos').remove([path]); throw e; }
+  if (old && old !== path) c.storage.from('couple-photos').remove([old]).catch(() => { });
+  await kv.set(`avatar:${state.user.id}`, { path, blob });
+  avatarUrls.delete(state.user.id);
+  emit('avatars');
+}
+export async function removeAvatar() {
+  if (state.mode !== 'cloud' || !state.profile?.avatar_url) return;
+  const old = state.profile.avatar_url;
+  await updateProfile({ avatar_url: null });
+  try { (await client()).storage.from('couple-photos').remove([old]).catch(() => { }); } catch { /* best effort */ }
+  await kv.del(`avatar:${state.user.id}`); avatarUrls.delete(state.user.id);
+  emit('avatars');
+}
+
 // ------------------------------------------------------------------ presence, typing, last seen
 // Private realtime channel `couple:<id>` (authorised by RLS on realtime.messages, see migration 20261107000001).
 let rtRetry = 0, rtChannel = null, seenTimer = null, typingStopTimer = null, partnerTypingTimer = null, lastTypingSent = 0, typingNow = false;
@@ -469,7 +521,7 @@ function subscribePresence() {
     if (rtChannel) return;
     rtChannel = c.channel(`couple:${state.coupleId}`, { config: { private: true, presence: { key: state.user.id }, broadcast: { self: false } } })
       .on('presence', { event: 'sync' }, syncPartnerOnline)
-      .on('presence', { event: 'join' }, syncPartnerOnline)
+      .on('presence', { event: 'join' }, () => { syncPartnerOnline(); refreshPartnerSeen(); })
       .on('presence', { event: 'leave' }, () => { syncPartnerOnline(); refreshPartnerSeen(); })
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.from !== state.partner?.id) return;
@@ -496,8 +548,12 @@ function subscribePresence() {
 async function refreshPartnerSeen() {
   try {
     const c = await client();
-    const { data } = await c.from('profiles').select('id,last_seen_at').eq('id', state.partner.id).maybeSingle();
-    if (data) { state.partner = { ...state.partner, last_seen_at: data.last_seen_at }; await kv.set('partner', state.partner); emit('presence'); }
+    const { data } = await c.from('profiles').select('id,last_seen_at,avatar_url').eq('id', state.partner.id).maybeSingle();
+    if (data) {
+      const changed = data.avatar_url !== state.partner.avatar_url;
+      state.partner = { ...state.partner, last_seen_at: data.last_seen_at, avatar_url: data.avatar_url ?? null };
+      await kv.set('partner', state.partner); emit('presence'); if (changed) emit('avatars');
+    }
   } catch { /* ignore */ }
 }
 /** Called by the composer. Sends at most one "typing" ping per 2.5s and a "stopped" ping 3s after the last key. */
@@ -514,7 +570,7 @@ export function notifyTyping(isTyping) {
 export function presenceVisibility() {
   if (!rtChannel) return;
   rtChannel.track({ at: Date.now(), visible: !document.hidden });
-  if (!document.hidden) touchLastSeen();
+  if (!document.hidden) { touchLastSeen(); refreshPartnerSeen(); }
 }
 
 async function mergeMessage(row, fromRealtime = false) {

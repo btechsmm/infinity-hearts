@@ -6,7 +6,10 @@ import { chatName, partnerName, dailyQuote, quoteAuthor, tz } from '../selectors
 import { milestoneForDay } from '../core/milestones.js';
 import { statusLine, formatStamp, needsStamp } from '../core/presence.js';
 import { openModal, confirmDialog, emptyState } from '../ui.js';
-import { CHAT_THEMES, chatTheme, setChatTheme } from '../chatTheme.js';
+import { chatTheme } from '../chatTheme.js';
+import { avatarNode, paintAvatar } from '../avatar.js';
+import { avatarControls, colourControls, wallpaperControls } from '../chatStyle.js';
+import { applyWallpaper } from '../wallpaper.js';
 import { haptic } from '../haptics.js';
 import { clearChatNotifications } from '../push.js';
 
@@ -22,12 +25,12 @@ export function mount(root) {
   // ---------- header
   const dot = h('span', { class: 'presence-dot', 'aria-hidden': 'true' });
   const statusEl = h('p', { class: 'chat-status', 'aria-live': 'polite' });
-  const avatar = h('div', { class: 'chat-avatar', 'aria-hidden': 'true' }, dot);
+  const avatar = avatarNode([dot], 'avatar chat-avatar');
   const nameBtn = h('button', { class: 'name-btn', type: 'button', onclick: renamePicker });
   const paintName = () => {
     name = chatName();
     nameBtn.textContent = name; nameBtn.setAttribute('aria-label', `${name}. Change the name shown for ${partnerName()}`);
-    avatar.firstChild?.nodeType === 3 ? (avatar.firstChild.nodeValue = name.slice(0, 1).toUpperCase()) : avatar.prepend(name.slice(0, 1).toUpperCase());
+    paintAvatar(avatar, state.partner?.id, name);
     input.placeholder = 'Message'; input.setAttribute('aria-label', `Message to ${name}`);
     chat.setAttribute('aria-label', `Chat with ${name}`);
   };
@@ -35,7 +38,7 @@ export function mount(root) {
   const header = h('header', { class: 'chat-head' }, back,
     avatar,
     h('div', { class: 'chat-who' }, h('h1', {}, nameBtn), statusEl),
-    h('button', { class: 'chat-icon', type: 'button', 'aria-label': 'Chat colour', onclick: themePicker }, icon('palette')),
+    h('button', { class: 'chat-icon', type: 'button', 'aria-label': 'Chat style', onclick: stylePicker }, icon('palette')),
     h('button', { class: 'chat-icon', type: 'button', 'aria-label': `Send a saved message to ${name}`, onclick: sendPicker }, icon('heart')));
 
   // ---------- thread
@@ -154,16 +157,12 @@ export function mount(root) {
           h('button', { class: 'btn ghost', type: 'button', onclick: () => close() }, 'Cancel')));
     }, { title: 'Chat name' });
   }
-  function themePicker() {
-    openModal((close) => h('div', { class: 'stack' }, h('h2', { class: 'title' }, 'Chat colour'),
-      h('p', { class: 'sub' }, 'Only changes how the chat looks on this device.'),
-      h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Chat colour' }, CHAT_THEMES.map((t) =>
-        h('button', {
-          class: 'swatch', type: 'button', role: 'radio', 'aria-checked': String(chatTheme() === t.id), 'aria-label': t.name, style: `--sw:${t.swatch}`,
-          onclick: (e) => { setChatTheme(t.id); haptic('select'); e.currentTarget.parentElement.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-checked', String(b === e.currentTarget))); }
-        },
-          h('span', { class: 'sw' }), h('span', {}, t.name)))),
-      h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Done')), { title: 'Chat colour' });
+  function stylePicker() {
+    openModal((close) => h('div', { class: 'stack' }, h('h2', { class: 'title' }, 'Chat style'),
+      h('section', { class: 'stack tight' }, h('h3', { class: 'eyebrow' }, 'My profile picture'), avatarControls()),
+      h('section', { class: 'stack tight' }, h('h3', { class: 'eyebrow' }, 'Chat colour'), colourControls()),
+      h('section', { class: 'stack tight' }, h('h3', { class: 'eyebrow' }, 'Wallpaper'), wallpaperControls()),
+      h('button', { class: 'btn', type: 'button', onclick: () => close() }, 'Done')), { title: 'Chat style' });
   }
   function sendPicker() {
     openModal((close) => {
@@ -183,8 +182,10 @@ export function mount(root) {
     }, { title: 'Send' });
   }
 
-  paintName(); render(); paintStatus(); fit(); autosize(); clearChatNotifications();
-  const off = [on('data', paintName), on('messages', render), on('presence', paintStatus), on('net', () => { render(); paintStatus(); flushOutbox(); })];
+  applyWallpaper(chat); paintName(); render(); paintStatus(); fit(); autosize(); clearChatNotifications();
+  const onWall = () => applyWallpaper(chat);
+  document.addEventListener('ih-wallpaper', onWall);
+  const off = [() => document.removeEventListener('ih-wallpaper', onWall), on('avatars', paintName), on('data', paintName), on('messages', render), on('presence', paintStatus), on('net', () => { render(); paintStatus(); flushOutbox(); })];
   const tick = setInterval(paintStatus, 30000);             // keeps "last seen … " wording fresh
   const onVis = () => { if (!document.hidden) { markThreadRead(); clearChatNotifications(); fit(); } };
   document.addEventListener('visibilitychange', onVis);

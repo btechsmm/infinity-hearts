@@ -6,6 +6,10 @@ import { zonedParts, zonedTimeToUtc } from '../core/time.js';
 import { enablePush, disablePush, isSubscribed, permissionState, pushSupported } from '../push.js';
 import { CLOUD } from '../config.js';
 import { nativeStatus } from '../native.js';
+import { soundEnabled, setSoundEnabled, soundVolume, setSoundVolume, playSound, unlockAudio } from '../sound.js';
+import { hapticsEnabled, setHapticsEnabled, hapticsSupported, haptic } from '../haptics.js';
+import { CHAT_THEMES, chatTheme, setChatTheme } from '../chatTheme.js';
+import { avatarControls, wallpaperControls } from '../chatStyle.js';
 
 const ZONES = ['Africa/Nairobi', 'Asia/Bahrain', 'UTC', 'Europe/London', 'Asia/Dubai', 'Asia/Riyadh', 'America/New_York', 'America/Los_Angeles', 'Europe/Paris', 'Asia/Kolkata'];
 
@@ -32,7 +36,7 @@ export function mount(root) {
     // --- profile
     const name = h('input', { type: 'text', value: state.profile?.display_name || '', maxlength: '40' });
     const ptz = tzSelect(state.profile?.timezone || 'Africa/Nairobi');
-    const profile = h('section', { class: 'card stack' }, h('h2', {}, 'Profile'),
+    const profile = h('section', { class: 'card stack' }, h('h2', {}, 'Profile'), state.mode === 'cloud' ? avatarControls() : null,
       field('Your name', name), field('Your time zone', ptz, 'Greetings and 8:00 AM reminders follow this.'),
       h('button', { class: 'btn primary', onclick: async () => { try { await updateProfile({ display_name: name.value.trim() || state.profile.display_name, timezone: ptz.value }); toast('Profile saved', 'ok'); } catch (e) { toast(e.message, 'error'); } } }, 'Save profile'));
 
@@ -46,14 +50,16 @@ export function mount(root) {
       field('Departure date and time', dep, `Entered in ${cfg.homeTimezone}. Until the exact time is known, 00:00 is used.`),
       field('Expected reunion date and time', ret, 'A plan, not a promise. Changing it recalculates everything instantly.'),
       field('Home time zone (used for day counting)', homeTz), field('Faith’s time zone', destTz), err,
-      h('button', { class: 'btn primary', onclick: async () => {
-        err.textContent = '';
-        try {
-          const tzHome = homeTz.value;
-          await updateSettings({ homeTimezone: tzHome, destinationTimezone: destTz.value, departureAt: fromLocalInput(dep.value, tzHome), expectedReturnAt: fromLocalInput(ret.value, tzHome) });
-          toast('Dates saved', 'ok');
-        } catch (e) { err.textContent = e.message; }
-      } }, 'Save dates'),
+      h('button', {
+        class: 'btn primary', onclick: async () => {
+          err.textContent = '';
+          try {
+            const tzHome = homeTz.value;
+            await updateSettings({ homeTimezone: tzHome, destinationTimezone: destTz.value, departureAt: fromLocalInput(dep.value, tzHome), expectedReturnAt: fromLocalInput(ret.value, tzHome) });
+            toast('Dates saved', 'ok');
+          } catch (e) { err.textContent = e.message; }
+        }
+      }, 'Save dates'),
       cfg.actualReunionAt ? h('div', {}, h('p', { class: 'sub' }, `Reunion recorded: ${fmtDate(cfg.actualReunionAt, cfg.homeTimezone)}`), h('button', { class: 'btn small ghost', onclick: async () => { if (await confirmDialog({ title: 'Undo recorded reunion?', body: 'The countdown will resume from the planned reunion date.', confirmLabel: 'Undo' })) updateSettings({ actualReunionAt: null }).catch((e) => toast(e.message, 'error')); } }, 'Undo recorded reunion')) : null);
 
     // --- notifications
@@ -73,6 +79,25 @@ export function mount(root) {
       field('Morning time (your time zone)', time),
       h('p', { class: 'hint' }, 'Web push needs an internet connection on the phone when the message is sent, and some phones delay or hold background notifications to save battery. Guaranteed offline reminders need the native Android app. ', native.available ? 'This is the native app: local reminders are available.' : 'See docs/NOTIFICATIONS.md.'));
 
+    // --- sounds, vibration, chat colour (stored on this device)
+    const vol = h('input', { type: 'range', min: '0', max: '1', step: '0.05', value: String(soundVolume()), 'aria-label': 'Sound volume', oninput: (e) => setSoundVolume(Number(e.target.value)) });
+    const themeRow = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Chat colour' }, CHAT_THEMES.map((t) =>
+      h('button', {
+        class: 'swatch', type: 'button', role: 'radio', 'aria-checked': String(chatTheme() === t.id), 'aria-label': t.name, style: `--sw:${t.swatch}`,
+        onclick: (e) => { setChatTheme(t.id); e.currentTarget.parentElement.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-checked', String(b === e.currentTarget))); }
+      }, h('span', { class: 'sw' }), h('span', {}, t.name))));
+    const sounds = h('section', { class: 'card stack' }, h('h2', {}, 'Sounds, vibration & chat'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: soundEnabled() ? '' : null, onchange: (e) => { setSoundEnabled(e.target.checked); unlockAudio(); } }), 'Play notification sounds while the app is open'),
+      field('Volume', vol),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn small', type: 'button', onclick: () => { unlockAudio(); setTimeout(() => playSound('chat', { force: true }), 80); } }, 'Test in-chat sound'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => { unlockAudio(); setTimeout(() => playSound('notify', { force: true }), 80); } }, 'Test notification sound')),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: hapticsEnabled() ? '' : null, onchange: (e) => { setHapticsEnabled(e.target.checked); if (e.target.checked) haptic('success', { force: true }); } }), 'Vibrate on touch'),
+      !hapticsSupported() ? h('p', { class: 'hint' }, 'This browser does not allow vibration (iPhone Safari never does). The setting is saved but has no effect here.') : null,
+      h('p', { class: 'eyebrow' }, 'Chat colour'), themeRow,
+      h('p', { class: 'eyebrow' }, 'Chat wallpaper'), wallpaperControls(),
+      h('p', { class: 'hint' }, 'Sounds play only while the app is open. Notifications that arrive when the app is closed use your phone’s own notification sound.'));
+
     // --- appearance
     const text = h('select', { onchange: (e) => { document.documentElement.dataset.text = e.target.value; localStorage.setItem('ih.text', e.target.value); } }, h('option', { value: 'normal' }, 'Standard'), h('option', { value: 'large' }, 'Larger'));
     text.value = localStorage.getItem('ih.text') || 'normal';
@@ -91,12 +116,14 @@ export function mount(root) {
       h('p', { class: 'sub' }, 'Your messages and photos are private to the two of you: they are protected by sign-in and database access rules, stored in a private bucket, and never shown on public pages. They are not end-to-end encrypted, which means the service host that runs the database could technically access them.'),
       h('p', { class: 'sub' }, 'Shared quote images only ever contain library quotes, never your private messages.'));
     const out = CLOUD ? h('section', { class: 'card stack' }, h('h2', {}, 'Account'), state.user?.email ? h('p', { class: 'sub' }, state.user.email) : null,
-      h('button', { class: 'btn danger', onclick: async () => {
-        const n = state.outbox.length;
-        if (await confirmDialog({ title: 'Sign out?', body: n ? `${n} unsent message(s) will be lost. This also clears photos and messages stored on this device.` : 'This also clears photos and messages stored on this device.', confirmLabel: 'Sign out', danger: true })) signOut();
-      } }, 'Sign out')) : null;
+      h('button', {
+        class: 'btn danger', onclick: async () => {
+          const n = state.outbox.length;
+          if (await confirmDialog({ title: 'Sign out?', body: n ? `${n} unsent message(s) will be lost. This also clears photos and messages stored on this device.` : 'This also clears photos and messages stored on this device.', confirmLabel: 'Sign out', danger: true })) signOut();
+        }
+      }, 'Sign out')) : null;
 
-    host.replaceChildren(h('header', {}, h('h1', { class: 'title' }, 'Settings')), profile, couple, notif, photos, look, sync, privacy, install(), out);
+    host.replaceChildren(h('header', {}, h('h1', { class: 'title' }, 'Settings')), profile, couple, notif, sounds, photos, look, sync, privacy, install(), out);
   }
   function install() {
     return h('section', { class: 'card stack' }, h('h2', {}, 'Install the app'),

@@ -13,6 +13,7 @@ const PRECACHE = __PRECACHE_LIST__;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
+});
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
@@ -86,18 +87,57 @@ self.addEventListener('fetch', (e) => {
 });
 
 // ---------------------------------------------------------------- Web Push
+/** Ask an open (background) app window to play the in-app sound. Resolves true if it did, false if nobody answers in 0.5 s. */
+function askPage(wins, data) {
+  return new Promise((resolve) => {
+    const ports = [];
+    const done = (v) => { clearTimeout(timer); ports.forEach((p) => { try { p.close(); } catch { /* already closed */ } }); resolve(v); };
+    const timer = setTimeout(() => done(false), 500);
+    for (const w of wins) {
+      try {
+        const ch = new MessageChannel();
+        ports.push(ch.port1);
+        ch.port1.onmessage = (ev) => done(!!ev.data?.handled);
+        w.postMessage({ type: 'chat-push', data }, [ch.port2]);
+      } catch { /* window gone */ }
+    }
+  });
+}
+
 self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch { data = { body: e.data?.text() }; }
-  const title = data.title || 'Infinity Hearts';
-  e.waitUntil(self.registration.showNotification(title, {
-    body: data.body || 'Good morning, my love.',
-    icon: '/assets/icons/icon-192.png',
-    badge: '/assets/icons/favicon-48.png',
-    tag: data.tag || 'infinity-hearts',            // same tag replaces, so duplicates collapse into one
-    renotify: false,
-    data: { url: data.url || '/#/home' },
-  }));
+  e.waitUntil((async () => {
+    // Chat pushes carry a signed ack. Telling the server "this phone has it" is what turns the sender's tick into two grey ticks.
+    // It works with the app closed because it runs here, inside the service worker.
+    const ack = data.ack?.id && data.ack?.url
+      ? fetch(data.ack.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: data.ack.id, token: data.ack.token }), keepalive: true }).catch(() => { })
+      : null;
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // Only stay quiet when the app window is really in front of the person (focused). A window that is open but behind
+    // other windows (desktop PWA running in the background) must still pop a notification, like on a phone.
+    if (data.kind === 'chat' && wins.some((c) => c.focused)) { await ack; return; }
+    // If the app is running in the background it plays your own notification sound itself; then the system one is muted.
+    const pageHandledSound = data.kind === 'chat' && wins.length ? await askPage(wins, data) : false;
+    let title = data.title || 'Infinity Hearts';
+    const opts = {
+      body: data.body || 'Good morning, my love.',
+      icon: '/assets/icons/icon-192.png',
+      badge: '/assets/icons/favicon-48.png',
+      tag: data.tag || 'infinity-hearts',            // same tag replaces, so duplicates collapse into one
+      renotify: false,
+      silent: pageHandledSound,                       // false = the system plays its own notification sound
+      vibrate: [120, 60, 120],
+      data: { url: data.url || '/#/home' },
+    };
+    if (data.kind === 'chat') {                       // like WhatsApp: one notification per chat, sounds again for each new message
+      const prev = await self.registration.getNotifications({ tag: opts.tag });
+      const n = (prev[0]?.data?.count || 0) + 1;
+      if (n > 1) title = `${title} (${n} new messages)`;
+      opts.renotify = true; opts.data.count = n;
+    }
+    await Promise.all([self.registration.showNotification(title, opts), ack]);
+  })());
 });
 
 self.addEventListener('notificationclick', (e) => {

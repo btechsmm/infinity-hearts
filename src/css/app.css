@@ -1043,17 +1043,160 @@ body.chat-mode #toasts {
   stroke-linejoin: round;
 }
 
-.chat-avatar {
+.avatar {
   position: relative;
   width: 38px;
   height: 38px;
   flex: none;
   border-radius: 50%;
-  background: linear-gradient(160deg, var(--me), var(--me-2));
+  background: linear-gradient(160deg, var(--me, #b30d22), var(--me-2, #8f0a1b));
   color: #fff;
   display: grid;
   place-items: center;
   font-weight: 600;
+}
+
+.avatar.big {
+  width: 64px;
+  height: 64px;
+  font-size: 1.5rem;
+}
+
+.avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.avatar-img[hidden] {
+  display: none;
+}
+
+.avatar.has-img .avatar-letter {
+  visibility: hidden;
+}
+
+.chat-avatar .presence-dot {
+  z-index: 2;
+}
+
+.ctl-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.stack.tight {
+  gap: 8px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.range-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.range-row input {
+  width: 100%;
+  accent-color: var(--me, #b30d22);
+}
+
+.range-row output {
+  min-width: 3.2em;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wall-preview {
+  position: relative;
+  width: 78px;
+  height: 120px;
+  flex: none;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0e0b0c;
+  border: 1px solid var(--line-strong);
+}
+
+.wall-preview-img {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+.wall-preview.empty::after {
+  content: "No photo";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.wall-bubble {
+  position: absolute;
+  font-size: 0.6rem;
+  padding: 3px 7px;
+  border-radius: 9px;
+}
+
+.wall-bubble.them {
+  left: 6px;
+  bottom: 40px;
+  background: #2a2226;
+  color: #f3ecee;
+}
+
+.wall-bubble.me {
+  right: 6px;
+  bottom: 16px;
+  background: #b30d22;
+  color: #fff;
+}
+
+.wall-preview.empty .wall-bubble {
+  display: none;
+}
+
+.chat-wall {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.chat> :not(.chat-wall) {
+  position: relative;
+  z-index: 1;
+}
+
+.chat.has-wall .stamp {
+  background: rgba(10, 8, 9, 0.62);
+  color: #e7dde0;
+  padding: 3px 10px;
+  border-radius: 10px;
+}
+
+.chat.has-wall .chat-status,
+.chat.has-wall .receipt {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 .presence-dot {

@@ -2,7 +2,7 @@
 //   'chat'   (in-chat.mp3): a message arrives while you are inside the conversation
 //   'notify' (notify.mp3) : every other in-app notification (message elsewhere in the app, milestones, reminders)
 // Browsers only allow audio after the person has touched the page once, so playback is unlocked on the first tap.
-// Sounds only play while the app is open and visible. Phone/OS push notifications use the system's own sound.
+// Sounds play while the app is open, in front or in the background (desktop). When the app is fully closed, the phone/OS plays its own sound.
 const FILES = { chat: '/assets/sounds/in-chat.mp3', notify: '/assets/sounds/notify.mp3' };
 const K = { on: 'ih.sound', vol: 'ih.volume' };
 
@@ -57,7 +57,7 @@ export function initSound() {
 /** Returns true if a sound was started. `force` is used by the Settings "test" buttons. */
 export function playSound(name, { force = false } = {}) {
     if (!FILES[name]) return false;
-    if (!force && (!soundEnabled() || document.hidden)) return false;
+    if (!force && !soundEnabled()) return false;
     const now = Date.now();
     if (now - (lastPlayed[name] || 0) < 600) return false;          // never stack the same sound
     lastPlayed[name] = now;
@@ -75,4 +75,14 @@ export function playSound(name, { force = false } = {}) {
         a.play().catch(() => { });
         return true;
     } catch (e) { console.warn('sound play failed', e); return false; }
+}
+
+// A message must sound once, even though it can reach the app twice (live connection and push). Keyed by message id.
+const sounded = new Set();
+/** Plays the notification sound for a message unless it already sounded. Returns true when it sounded (now or earlier). */
+export function soundOnce(messageId, name = 'notify') {
+    if (messageId && sounded.has(messageId)) return true;
+    const played = playSound(name);
+    if (played && messageId) { sounded.add(messageId); if (sounded.size > 200) sounded.delete(sounded.values().next().value); }
+    return played;
 }

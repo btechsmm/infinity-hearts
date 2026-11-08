@@ -44,3 +44,14 @@ export async function clearChatNotifications() {
     (await reg?.getNotifications({ tag: 'ih-chat' }))?.forEach((n) => n.close());
   } catch { /* not supported */ }
 }
+
+/** Show a system notification from the open app itself (used only when push is not set up, so there are no duplicates). */
+export async function showLocalNotification(title, body) {
+  try {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (!reg || await reg.pushManager?.getSubscription()) return false;           // push will show it
+    await reg.showNotification(title, { body, tag: 'ih-chat', renotify: true, silent: true, icon: '/assets/icons/icon-192.png', badge: '/assets/icons/favicon-48.png', data: { url: '/#/messages' } });
+    return true;
+  } catch { return false; }
+}

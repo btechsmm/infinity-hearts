@@ -57,4 +57,14 @@ export async function resizeImage(file, max = 1600, quality = 0.86) {
   return new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', quality));
 }
 
+/** Centre-crop to a square and downscale: used for profile pictures. */
+export async function squareImage(file, size = 384, quality = 0.88) {
+  const bmp = await createImageBitmap(file);
+  const side = Math.min(bmp.width, bmp.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  canvas.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+  return new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', quality));
+}
+
 export function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }

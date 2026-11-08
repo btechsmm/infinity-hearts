@@ -8,7 +8,8 @@ import { scheduleNativeReminders, isNative } from './native.js';
 import { chatName } from './selectors.js';
 import { storageDegraded } from './store.js';
 import { initBack } from './back.js';
-import { initSound, playSound } from './sound.js';
+import { initSound, playSound, soundOnce } from './sound.js';
+import { showLocalNotification } from './push.js';
 import { initHaptics, haptic } from './haptics.js';
 
 const ROUTES = {
@@ -177,10 +178,20 @@ const flushMilestone = () => { if (pendingMilestone && state.authed) { toast(`${
 const inChat = () => (location.hash.replace(/^#\/?/, '').split('?')[0]) === 'messages';
 on('messages', (e) => {
   if (!e.detail?.incoming || !state.authed) return;
-  if (inChat() && !document.hidden) { playSound('chat'); haptic('receive'); return; }
-  playSound('notify'); haptic('receive');
   const last = state.messages[state.messages.length - 1];
-  if (!document.hidden) toast(`${chatName()}: ${last?.content?.slice(0, 80) || 'New message'}`, 'ok', { onClick: () => { location.hash = '#/messages'; } });
+  const focused = document.hasFocus() && !document.hidden;
+  haptic('receive');
+  if (inChat() && focused) { playSound('chat'); return; }
+  soundOnce(last?.id);
+  const preview = `${last?.content?.slice(0, 80) || 'New message'}`;
+  if (focused) toast(`${chatName()}: ${preview}`, 'ok', { onClick: () => { location.hash = '#/messages'; } });
+  else showLocalNotification(chatName(), preview);         // app running in the background: pop a notification like on a phone
+});
+// The service worker asks the open app to play the sound when a push arrives while the app is in the background.
+navigator.serviceWorker?.addEventListener('message', (ev) => {
+  const m = ev.data;
+  if (m?.type !== 'chat-push') return;
+  ev.ports?.[0]?.postMessage({ handled: soundOnce(m.data?.ack?.id) });
 });
 on('milestone', (e) => { playSound('notify'); pendingMilestone = e.detail; if (welcomed) flushMilestone(); });
 
