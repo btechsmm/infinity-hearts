@@ -45,12 +45,12 @@ export async function clearChatNotifications() {
   } catch { /* not supported */ }
 }
 
-/** Show a system notification from the open app itself (used only when push is not set up, so there are no duplicates). */
+/** Show a system notification from the open app itself when it is running in the background (desktop PWA). */
 export async function showLocalNotification(title, body) {
   try {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
     const reg = await navigator.serviceWorker?.getRegistration();
-    if (!reg || await reg.pushManager?.getSubscription()) return false;           // push will show it
+    if (!reg) return false;                                  // same tag as the push notification, so it is replaced, never doubled
     await reg.showNotification(title, { body, tag: 'ih-chat', renotify: true, silent: true, icon: '/assets/icons/icon-192.png', badge: '/assets/icons/favicon-48.png', data: { url: '/#/messages' } });
     return true;
   } catch { return false; }

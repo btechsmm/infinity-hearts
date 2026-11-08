@@ -523,6 +523,8 @@ function subscribePresence() {
       .on('presence', { event: 'sync' }, syncPartnerOnline)
       .on('presence', { event: 'join' }, () => { syncPartnerOnline(); refreshPartnerSeen(); })
       .on('presence', { event: 'leave' }, () => { syncPartnerOnline(); refreshPartnerSeen(); })
+      .on('broadcast', { event: 'msg' }, ({ payload }) => onBroadcastMessage(payload))
+      .on('broadcast', { event: 'receipt' }, ({ payload }) => onReceipt(payload))
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (!payload || payload.from !== state.partner?.id) return;
         clearTimeout(partnerTypingTimer);
@@ -575,14 +577,35 @@ export function presenceVisibility() {
 
 async function mergeMessage(row, fromRealtime = false) {
   const i = state.messages.findIndex((m) => m.id === row.id || (m.client_id && m.client_id === row.client_id && m.sender_id === row.sender_id));
+  const prev = i >= 0 ? state.messages[i] : null;
+  // Keep receipts that are already known (a fast broadcast can be ahead of the database event).
+  if (prev) { row = { ...row, read_at: row.read_at || prev.read_at, delivered_at: row.delivered_at || prev.delivered_at }; }
   i >= 0 ? (state.messages[i] = row) : state.messages.push(row);
   state.messages.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
-  await idb.put('messages', row);
   state.outbox = state.outbox.filter((o) => o.id !== row.client_id);
-  await idb.del('outbox', row.client_id);
   const incoming = fromRealtime && row.recipient_id === state.user?.id && i < 0;
-  emit('messages', { incoming });
+  emit('messages', { incoming });                              // show it NOW; saving to the device happens after
   if (incoming) markDelivered();
+  try { await Promise.all([idb.put('messages', row), idb.del('outbox', row.client_id)]); } catch { /* storage problems must not delay or hide messages */ }
+}
+
+// ---- instant path: Supabase Broadcast on the private couple channel (tens of ms), the database event stays as the backup
+const sendRt = (event, payload) => { try { if (rtChannel && state.rt.connected) rtChannel.send({ type: 'broadcast', event, payload }); } catch { /* backup path covers it */ } };
+function onBroadcastMessage(row) {
+  if (!row || typeof row.id !== 'string' || typeof row.content !== 'string' || row.content.length > 2000) return;
+  // Only accept what is plainly from my partner to me inside our couple.
+  if (row.sender_id !== state.partner?.id || row.recipient_id !== state.user?.id || row.couple_id !== state.coupleId) return;
+  mergeMessage(row, true);
+}
+function onReceipt(p) {
+  if (!p || !Array.isArray(p.ids) || (p.kind !== 'delivered' && p.kind !== 'read') || typeof p.at !== 'string') return;
+  const ids = new Set(p.ids); let changed = false; const touched = [];
+  for (const m of state.messages) {
+    if (!ids.has(m.id) || m.sender_id !== state.user?.id) continue;
+    if (p.kind === 'read' && !m.read_at) { m.read_at = p.at; m.delivered_at = m.delivered_at || p.at; changed = true; touched.push(m); }
+    if (p.kind === 'delivered' && !m.delivered_at) { m.delivered_at = p.at; changed = true; touched.push(m); }
+  }
+  if (changed) { emit('messages'); idb.putMany('messages', touched).catch(() => { }); }
 }
 
 /** Tell the sender this device has the messages (grey double tick). Reading later upgrades it to blue. */
@@ -593,8 +616,9 @@ export async function markDelivered() {
   try {
     const c = await client();
     const now = new Date().toISOString();
+    sendRt('receipt', { kind: 'delivered', ids: pending.map((m) => m.id), at: now });
     const { error } = await c.from('messages').update({ delivered_at: now }).eq('recipient_id', state.user.id).is('delivered_at', null);
-    if (!error) { pending.forEach((m) => { m.delivered_at = now; }); await idb.putMany('messages', pending); emit('messages'); }
+    if (!error) { pending.forEach((m) => { m.delivered_at = now; }); emit('messages'); await idb.putMany('messages', pending); }
   } catch { /* retried on next open */ }
 }
 
@@ -608,8 +632,8 @@ export async function sendMessage({ content, type = 'text', quoteId = null }) {
   if (state.mode !== 'cloud') throw new Error('Messaging needs a signed-in account.');
   const item = { id: uuid(), type, content, quote_id: quoteId && isUuid(quoteId) ? quoteId : null, sent_at: new Date().toISOString(), status: 'queued' };
   state.outbox.push(item);
-  await idb.put('outbox', item);
   emit('messages');
+  idb.put('outbox', item).catch(() => { });     // saved for offline retry without making the send wait
   await flushOutbox();
 }
 
@@ -622,7 +646,11 @@ export async function flushOutbox() {
     for (const item of [...state.outbox].sort((a, b) => a.sent_at.localeCompare(b.sent_at))) {
       const row = { couple_id: state.coupleId, client_id: item.id, sender_id: state.user.id, recipient_id: state.partner.id, message_type: item.type, content: item.content, quote_id: item.quote_id, sent_at: item.sent_at };
       const { data, error } = await c.from('messages').insert(row).select().single();
-      if (!error) { await mergeMessage(data); continue; }
+      if (!error) {
+        sendRt('msg', data);                                                 // partner sees it within a blink
+        c.functions.invoke('notify-message', { body: { message_id: data.id } }).catch(() => { });   // phone notification without waiting for the database hop
+        await mergeMessage(data); continue;
+      }
       if (error.code === '23505') {
         // Already delivered earlier (retry after a dropped response): fetch it and clear the queue entry.
         const { data: existing } = await c.from('messages').select('*').eq('sender_id', state.user.id).eq('client_id', item.id).maybeSingle();
@@ -642,8 +670,9 @@ export async function markThreadRead() {
   if (!unread.length) return;
   const c = await client();
   const now = new Date().toISOString();
+  sendRt('receipt', { kind: 'read', ids: unread.map((m) => m.id), at: now });
   const { error } = await c.from('messages').update({ read_at: now }).eq('recipient_id', state.user.id).is('read_at', null);
-  if (!error) { unread.forEach((m) => { m.read_at = now; m.delivered_at = m.delivered_at || now; }); await idb.putMany('messages', unread); emit('messages'); }
+  if (!error) { unread.forEach((m) => { m.read_at = now; m.delivered_at = m.delivered_at || now; }); emit('messages'); await idb.putMany('messages', unread); }
 }
 export async function deleteMessage(id) {
   const c = await client();
