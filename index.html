@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>Infinity Hearts · Becam &amp; Faith</title>
+  <meta name="description" content="Infinity Hearts: a private countdown and love-letter space for Becam and Faith.">
+  <meta name="theme-color" content="#0a0a0b">
+  <meta name="color-scheme" content="dark">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/assets/icons/favicon.ico" sizes="48x48">
+  <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Infinity Hearts">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="/src/css/app.css">
+  <script>
+    // Android app only: if something fails while loading, show the reason on screen instead of leaving a black page.
+    (function () {
+      var errs = [];
+      function show() {
+        if (!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())) return;
+        var el = document.getElementById('ih-boot-error');
+        if (!el) {
+          el = document.createElement('pre'); el.id = 'ih-boot-error';
+          el.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;max-height:45vh;overflow:auto;margin:0;padding:10px;background:#2a0008;color:#ffd7dc;border:1px solid #b30d22;border-radius:10px;font:12px/1.4 monospace;white-space:pre-wrap;word-break:break-word;z-index:2147483647';
+          el.onclick = function () { el.remove(); };
+          (document.body || document.documentElement).appendChild(el);
+        }
+        el.textContent = 'Something failed to load (tap to hide):\n' + errs.slice(-3).join('\n');
+      }
+      window.addEventListener('error', function (e) { errs.push((e.message || 'error') + (e.filename ? ' @ ' + String(e.filename).split('/').slice(-2).join('/') + ':' + e.lineno : '')); show(); });
+      window.addEventListener('unhandledrejection', function (e) { errs.push('promise: ' + String((e.reason && (e.reason.stack || e.reason.message)) || e.reason).slice(0, 300)); show(); });
+    })();
+  </script>
+  <script src="/config.js"></script>
+</head>
+
+<body>
+  <div id="app"><noscript>Infinity Hearts needs JavaScript to run.</noscript></div>
+  <div id="toasts" aria-live="polite"></div>
+  <script type="module" src="/src/js/main.js"></script>
+</body>
+
+</html>
