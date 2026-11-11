@@ -1,102 +1,97 @@
-// Edge Function: send-notifications  (plain JavaScript, valid in Deno / Supabase Edge Runtime)
-// Called every 15 minutes by pg_cron (header x-cron-secret) and, for a real server-side test, by a signed-in user ({ test: true }).
-// Secrets live ONLY in function environment variables (supabase secrets set ...). Nothing secret is in the browser.
-import { createClient } from 'npm:@supabase/supabase-js@2';
-import webpush from 'npm:web-push@3.6.7';
-import { planNotifications } from '../_shared/plan.js';
-import { parseServiceAccount, sendFcm, CHAT_CHANNEL, DAILY_CHANNEL } from '../_shared/fcm.js';
+// Bridge to the OPTIONAL native Android app (Capacitor + @capacitor/local-notifications).
+// In a normal browser/PWA these functions do nothing. NOTE: this code has not been built or run on a device yet.
+import { state, saveNativeToken } from './api.js';
+import { handleNativeBack } from './back.js';
+import { dailyQuote, weeklyQuote, monthlyQuote, myTz } from './selectors.js';
+import { zonedTimeToUtc, zonedParts, MS } from './core/time.js';
+import { milestoneForDay } from './core/milestones.js';
 
-const env = (k) => Deno.env.get(k) || '';
-const admin = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'), { auth: { persistSession: false } });
-webpush.setVapidDetails(env('VAPID_SUBJECT') || 'mailto:admin@example.com', env('VAPID_PUBLIC_KEY'), env('VAPID_PRIVATE_KEY'));
+const plugin = () => window.Capacitor?.Plugins?.LocalNotifications;
+export const isNative = () => !!window.Capacitor?.isNativePlatform?.();
 
-const fcmAccount = parseServiceAccount(env('FCM_SERVICE_ACCOUNT'));   // optional: only needed for the Android app
-const json = (b, status = 200) => new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
-
-function cfgFrom(r) {
-  return {
-    departureAt: r.departure_at, expectedReturnAt: r.expected_return_at, actualReunionAt: r.actual_reunion_at,
-    homeTimezone: r.home_timezone, destinationTimezone: r.destination_timezone,
-    dailyNotificationEnabled: r.daily_notification_enabled, defaultNotificationTime: String(r.default_notification_time).slice(0, 5),
-    customRules: r.custom_milestone_rules || [],
-  };
+export async function nativeStatus() {
+  const p = plugin();
+  if (!isNative() || !p) return { available: false };
+  try { const perm = await p.checkPermissions(); return { available: true, permission: perm.display }; } catch { return { available: true, permission: 'unknown' }; }
 }
 
-async function pushTo(subs, payload) {
-  let sent = 0;
-  for (const s of subs) {
-    try {
-      if (s.platform === 'android') {          // the Android app: Firebase push
-        if (!fcmAccount) continue;
-        const r = await sendFcm(fcmAccount, s.subscription_data?.fcm, { title: payload.title, body: payload.body, url: payload.url || '/#/home', tag: (payload.tag || 'ih').slice(0, 60), channelId: payload.tag === 'ih-test' ? CHAT_CHANNEL : DAILY_CHANNEL, kind: 'daily' });
-        if (r.gone) await admin.from('notification_subscriptions').delete().eq('id', s.id); else if (r.ok) sent++; else console.error('fcm failed', r.status, r.code);
-        continue;
-      }
-      await webpush.sendNotification(s.subscription_data, JSON.stringify(payload), { TTL: 6 * 3600, urgency: 'normal', topic: (payload.tag || 'ih').slice(0, 32) });
-      sent++;
-    } catch (e) {
-      if (e.statusCode === 404 || e.statusCode === 410) await admin.from('notification_subscriptions').delete().eq('id', s.id);   // expired subscription
-      else console.error('push failed', e.statusCode, e.body);
-    }
+/**
+ * Schedules the next `days` mornings as local notifications (works with no connection, survives reboot via the plugin's boot receiver).
+ * Content comes from the same engine as the in-app screens. Android caps pending alarms, so we keep a rolling 45-day window and
+ * re-run this each time the app opens.
+ */
+export async function scheduleNativeReminders(days = 45) {
+  const p = plugin();
+  if (!isNative() || !p) return { scheduled: 0 };
+  const perm = await p.requestPermissions();
+  if (perm.display !== 'granted') return { scheduled: 0, reason: 'permission-denied' };
+  await p.createChannel?.({ id: 'infinity-hearts-daily', name: 'Daily love messages', importance: 3, visibility: 0 });
+  const pending = await p.getPending();
+  if (pending.notifications?.length) await p.cancel({ notifications: pending.notifications.map((n) => ({ id: n.id })) });
+
+  const [hh, mm] = (state.prefs?.preferred_time || state.cfg.defaultNotificationTime || '08:00').split(':').map(Number);
+  const zone = state.prefs?.timezone || myTz();
+  const notifications = [];
+  const today = zonedParts(new Date(), zone);
+  for (let i = 0; i < days; i++) {
+    const base = new Date(Date.UTC(today.year, today.month - 1, today.day) + i * MS.day);
+    const at = zonedTimeToUtc(base.getUTCFullYear(), base.getUTCMonth() + 1, base.getUTCDate(), hh, mm, zone);
+    if (at <= new Date()) continue;
+    const m = milestoneForDay(at, state.cfg, state.cfg.customRules);
+    const body = (state.prefs?.milestone_enabled !== false && m && m.significant) ? `${m.title}. ${m.message}` : dailyQuote(at)?.message || 'Good morning, my love.';
+    notifications.push({ id: 1000 + i, title: 'Infinity Hearts', body, schedule: { at, allowWhileIdle: true }, channelId: 'infinity-hearts-daily' });
   }
-  return sent;
+  if (notifications.length) await p.schedule({ notifications });
+  return { scheduled: notifications.length };
+}
+export { weeklyQuote, monthlyQuote };
+
+let backBound = false;
+/** Takes over the Android Back button (needs the @capacitor/app plugin). Safe to call more than once. */
+export function bindNativeBack() {
+  if (backBound || !isNative()) return;
+  const App = window.Capacitor?.registerPlugin?.('App') || window.Capacitor?.Plugins?.App;
+  if (!App?.addListener) return;
+  backBound = true;
+  App.addListener('backButton', () => handleNativeBack(() => App.exitApp()));
 }
 
-Deno.serve(async (req) => {
-  if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
-  const body = await req.json().catch(() => ({}));
-
-  // ---- real test push for the signed-in caller
-  const auth = req.headers.get('Authorization');
-  if (body.test && auth) {
-    const userClient = createClient(env('SUPABASE_URL'), env('SUPABASE_ANON_KEY'), { global: { headers: { Authorization: auth } }, auth: { persistSession: false } });
-    const { data: { user }, error } = await userClient.auth.getUser();
-    if (error || !user) return json({ error: 'Not signed in' }, 401);
-    const { data: subs } = await admin.from('notification_subscriptions').select('*').eq('user_id', user.id).eq('enabled', true);
-    const sent = await pushTo(subs || [], { title: 'Infinity Hearts', body: 'This is a real test message sent from the server. It works.', tag: 'ih-test', url: '/#/settings' });
-    return json({ sent, subscriptions: subs?.length || 0 });
-  }
-
-  // ---- scheduled run
-  if (!env('CRON_SECRET') || req.headers.get('x-cron-secret') !== env('CRON_SECRET')) return json({ error: 'Forbidden' }, 403);
-  const now = new Date();
-  const [{ data: settings }, { data: members }, { data: profiles }, { data: prefs }, { data: subs }, { data: events }, { data: quotes }] = await Promise.all([
-    admin.from('couple_settings').select('*'),
-    admin.from('couple_members').select('*'),
-    admin.from('profiles').select('id,display_name'),
-    admin.from('notification_preferences').select('*'),
-    admin.from('notification_subscriptions').select('*').eq('enabled', true),
-    admin.from('special_dates').select('*'),
-    admin.from('quotes').select('id,couple_id,frequency,audience,message,is_active').eq('is_active', true),
-  ]);
-
-  const summary = { sent: 0, claimed: 0, users: 0 };
-  for (const s of settings || []) {
-    const cfg = cfgFrom(s);
-    for (const m of (members || []).filter((x) => x.couple_id === s.couple_id)) {
-      summary.users++;
-      const name = (profiles || []).find((p) => p.id === m.user_id)?.display_name || (m.partner_role === 'faith' ? 'Faith' : 'Becam');
-      const plan = planNotifications({
-        now, cfg, member: { role: m.partner_role, name },
-        prefs: (prefs || []).find((p) => p.user_id === m.user_id) || null,
-        quotes: (quotes || []).filter((q) => !q.couple_id || q.couple_id === s.couple_id),
-        events: (events || []).filter((e) => e.couple_id === s.couple_id),
+const push = () => window.Capacitor?.registerPlugin?.('PushNotifications') || window.Capacitor?.Plugins?.PushNotifications;
+let pushBound = false;
+/**
+ * Android app: registers with Firebase so messages and quotes arrive while the app is closed.
+ * Needs @capacitor/push-notifications and android/app/google-services.json. Resolves true once this phone's token is saved.
+ */
+export async function registerNativePush() {
+  const p = push();
+  if (!isNative() || !p) return false;
+  try {
+    let perm = await p.checkPermissions();
+    if (perm.receive !== 'granted') perm = await p.requestPermissions();
+    if (perm.receive !== 'granted') return false;
+    // Channels decide the sound on Android 8+. The sound file is android/app/src/main/res/raw/notify.mp3 (see docs/ANDROID.md).
+    await p.createChannel?.({ id: 'infinity-hearts-chat', name: 'Messages', description: 'Messages from your partner', importance: 5, visibility: 0, sound: 'notify.mp3', vibration: true });
+    await p.createChannel?.({ id: 'infinity-hearts-daily', name: 'Daily love messages', description: 'Quotes and milestones', importance: 4, visibility: 0, sound: 'notify.mp3', vibration: true });
+    if (!pushBound) {
+      pushBound = true;
+      p.addListener('pushNotificationActionPerformed', (a) => {
+        const url = a?.notification?.data?.url || '/#/messages';
+        location.hash = String(url).replace(/^\/?#?/, '#');
       });
-      for (const n of plan) {
-        // Claim the key first. A unique (user, kind, key) row makes reruns and overlapping runs harmless.
-        const { error: claimErr } = await admin.from('notification_log').insert({ user_id: m.user_id, kind: n.kind, dedupe_key: n.key });
-        if (claimErr) continue;                                        // already sent (unique violation) or transient error
-        summary.claimed++;
-        if (n.milestone) {
-          const { id: _i, key: _k, significant: _s, ...row } = n.milestone;
-          await admin.from('milestones').upsert({ ...row, couple_id: s.couple_id }, { onConflict: 'couple_id,milestone_date', ignoreDuplicates: true });
-        }
-        const mine = (subs || []).filter((x) => x.user_id === m.user_id);
-        const sent = await pushTo(mine, { title: n.title, body: n.body, url: n.url, tag: n.key });
-        summary.sent += sent;
-        await admin.from('notification_log').update({ status: sent ? 'sent' : 'no_subscription' }).eq('user_id', m.user_id).eq('kind', n.kind).eq('dedupe_key', n.key);
-      }
     }
-  }
-  return json(summary);
-});
+    return await new Promise((resolve) => {
+      const done = (v) => { clearTimeout(t); resolve(v); };
+      const t = setTimeout(() => done(false), 15000);
+      p.addListener('registration', async (tok) => { try { await saveNativeToken(tok.value); done(true); } catch (e) { console.warn('token not saved', e); done(false); } });
+      p.addListener('registrationError', (e) => { console.warn('push registration failed', e); done(false); });
+      p.register();
+    });
+  } catch (e) { console.warn('native push', e); return false; }
+}
+
+/** Once Firebase push works the server sends the morning messages, so the phone-scheduled copies are removed to avoid doubles. */
+export async function cancelNativeReminders() {
+  const p = plugin();
+  if (!isNative() || !p) return;
+  try { const pending = await p.getPending(); if (pending.notifications?.length) await p.cancel({ notifications: pending.notifications.map((n) => ({ id: n.id })) }); } catch { /* ignore */ }
+}
