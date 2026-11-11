@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "605144326533",
+    "project_id": "infinityhearts",
+    "storage_bucket": "infinityhearts.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:605144326533:android:cdf995fbbd80ab45f124ec",
+        "android_client_info": {
+          "package_name": "com.infinityhearts.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDGEcRoW627YHY8gaA_0lWIRPnumoJNpvg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

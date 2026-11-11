@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Infinity Hearts</string>
+    <string name="title_activity_main">Infinity Hearts</string>
+    <string name="package_name">com.infinityhearts.app</string>
+    <string name="custom_url_scheme">com.infinityhearts.app</string>
+</resources>
